@@ -1777,35 +1777,29 @@ export function SearchTakeover() {
                     ) : (
                       <>
                         {/* Cases */}
-                        {matchedCases.length > 0 && (() => {
-                          const expanded = expandedSections.cases;
-                          const visible = expanded ? matchedCases : matchedCases.slice(0, ROW_CAP);
-                          const remaining = matchedCases.length - visible.length;
-                          return (
-                            <div style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', paddingTop: 16, paddingBottom: 16 }}>
-                              <SectionHeader
-                                title="Cases"
-                                count={matchedCases.length}
-                                action={(
-                                  <button
-                                    onClick={() => navigate('/cases')}
-                                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 600, color: '#60a5fa' }}
-                                    onMouseEnter={e => (e.currentTarget.style.color = '#3b82f6')}
-                                    onMouseLeave={e => (e.currentTarget.style.color = '#60a5fa')}
-                                  >
-                                    See all
-                                  </button>
-                                )}
-                              />
-                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '0 20px 8px' }}>
-                                {visible.map(c => (
-                                  <CaseChip key={c.caseId} c={c} query={query} onClick={() => handleViewCase(c.caseId)} />
-                                ))}
-                              </div>
-                              {remaining > 0 && <ShowMoreButton remaining={remaining} onClick={() => toggleSection('cases')} />}
+                        {matchedCases.length > 0 && (
+                          <div style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', paddingTop: 16, paddingBottom: 16 }}>
+                            <SectionHeader
+                              title="Cases"
+                              count={matchedCases.length}
+                              action={(
+                                <button
+                                  onClick={() => navigate('/cases')}
+                                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 600, color: '#60a5fa' }}
+                                  onMouseEnter={e => (e.currentTarget.style.color = '#3b82f6')}
+                                  onMouseLeave={e => (e.currentTarget.style.color = '#60a5fa')}
+                                >
+                                  See all
+                                </button>
+                              )}
+                            />
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '0 20px 8px' }}>
+                              {matchedCases.map(c => (
+                                <CaseChip key={c.caseId} c={c} query={query} onClick={() => handleViewCase(c.caseId)} />
+                              ))}
                             </div>
-                          );
-                        })()}
+                          </div>
+                        )}
 
                         {/* Attribute matches — thumbnail grid */}
                         {attributeGroupItems.length > 0 && (() => {

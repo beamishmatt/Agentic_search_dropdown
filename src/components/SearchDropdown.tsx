@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Search,
   X,
+  ArrowUpRight,
   Video,
   FileText,
   Image,
@@ -11,14 +12,15 @@ import {
   Loader2,
   LayoutGrid,
   FolderOpen,
-  Users,
+  User,
   Car,
   Smartphone,
+  AlertTriangle,
   Maximize2,
 } from 'lucide-react';
 import { agentSearch } from '../engine/agentSearch';
 import { SearchOutput, SearchEvidenceResult, MediaClass } from '../data/types';
-import { SearchFilterBar, useSearchFilters } from './SearchFilterBar';
+import { useSearchFilters } from './SearchFilterBar';
 
 // ─── Scope chips ──────────────────────────────────────────────────────────────
 
@@ -31,46 +33,46 @@ export interface ScopeChip {
 
 export const SCOPE_CHIPS: ScopeChip[] = [
   {
-    id: 'cases',
-    label: 'Cases',
+    id: 'evidence',
+    label: 'Evidence',
+    icon: <Video size={13} />,
+    filter: () => true,
+  },
+  {
+    id: 'incident',
+    label: 'Incident',
+    icon: <AlertTriangle size={13} />,
+    filter: (r) => r.category?.toLowerCase().includes('incident') || r.tags?.some(t => t.toLowerCase().includes('incident')) || false,
+  },
+  {
+    id: 'case',
+    label: 'Case',
     icon: <FolderOpen size={13} />,
     filter: (r) => !!r.case_id,
   },
   {
-    id: 'evidence',
-    label: 'Evidence',
-    icon: <FileText size={13} />,
-    filter: () => true,
+    id: 'person',
+    label: 'Person',
+    icon: <User size={13} />,
+    filter: (r) => r.category?.toLowerCase().includes('user') || r.officer !== undefined || false,
   },
   {
-    id: 'vehicles',
-    label: 'Vehicles',
+    id: 'vehicle',
+    label: 'Vehicle',
     icon: <Car size={13} />,
     filter: (r) => r.category?.toLowerCase().includes('vehicle') || r.tags?.some(t => t.toLowerCase().includes('vehicle')) || false,
   },
   {
-    id: 'people',
-    label: 'People',
-    icon: <Users size={13} />,
-    filter: (r) => r.category?.toLowerCase().includes('user') || r.officer !== undefined || false,
-  },
-  {
-    id: 'devices',
-    label: 'Devices',
+    id: 'device',
+    label: 'Device',
     icon: <Smartphone size={13} />,
     filter: (r) => r.category?.toLowerCase().includes('device') || r.tags?.some(t => t.toLowerCase().includes('device')) || false,
   },
   {
-    id: 'images',
-    label: 'Images',
-    icon: <Image size={13} />,
-    filter: (r) => r.media_class === 'image',
-  },
-  {
-    id: 'video',
-    label: 'Video',
-    icon: <Video size={13} />,
-    filter: (r) => r.media_class === 'video',
+    id: 'multi-cam',
+    label: 'Multi-cam',
+    icon: <LayoutGrid size={13} />,
+    filter: (r) => r.media_class === 'video' || r.tags?.some(t => t.toLowerCase().includes('multi-cam')) || false,
   },
 ];
 
@@ -215,6 +217,30 @@ function ResultRow({ result, query, onClick }: { result: SearchEvidenceResult; q
   );
 }
 
+
+// ─── Case chip ────────────────────────────────────────────────────────────────
+
+function CaseChip({ label, query, onClick }: { label: string; query: string; onClick?: () => void }) {
+  const [hovered, setHovered] = React.useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        padding: '6px 12px', borderRadius: 99, border: '1px solid var(--border)',
+        backgroundColor: hovered ? 'var(--fill-hover)' : 'transparent',
+        cursor: 'pointer', fontFamily: 'inherit', transition: 'background-color 0.1s',
+      }}
+    >
+      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--foreground)' }}>
+        <HighlightText text={label} query={query} />
+      </span>
+      <ArrowUpRight size={13} style={{ color: 'var(--text-weak)', flexShrink: 0 }} />
+    </button>
+  );
+}
 
 // ─── Filter section ───────────────────────────────────────────────────────────
 
@@ -435,6 +461,19 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
   const caseEntities = output?.entities.filter(e => e.type === 'case') ?? [];
   const officerEntities = output?.entities.filter(e => e.type === 'officer') ?? [];
 
+  // Case matches — prefer named case entities, fall back to case ids from results
+  const caseMatches = caseEntities.length > 0
+    ? caseEntities.map(e => ({
+        id: e.id,
+        name: e.name,
+        subtitle: e.subtitle || `${output?.results.filter(r => r.case_id === e.id).length ?? 0} evidence`,
+      }))
+    : uniqueCases.map(cid => ({
+        id: cid,
+        name: cid,
+        subtitle: `${output?.results.filter(r => r.case_id === cid).length ?? 0} evidence`,
+      }));
+
   const dropdownVisible = isOpen && (showRecents ? true : (isLoading || hasResults || output !== null));
 
   return (
@@ -532,8 +571,31 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
 
         {/* Filter chips — always visible when open */}
         {isOpen && (
-          <div style={{ borderTop: '1px solid var(--border)', padding: '8px 12px' }}>
-            <SearchFilterBar filters={searchFilters} />
+          <div style={{ borderTop: '1px solid var(--border)', padding: '8px 12px', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {SCOPE_CHIPS.map(chip => {
+              const active = selectedScopes.has(chip.id);
+              return (
+                <button
+                  key={chip.id}
+                  onClick={() => toggleScope(chip.id)}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                    padding: '4px 11px', borderRadius: 99, cursor: 'pointer',
+                    fontSize: 12, fontWeight: active ? 600 : 400,
+                    border: `1px solid ${active ? 'transparent' : 'var(--border)'}`,
+                    backgroundColor: active ? 'var(--foreground)' : 'transparent',
+                    color: active ? 'var(--raised)' : 'var(--foreground)',
+                    transition: 'all 0.12s',
+                    fontFamily: 'inherit',
+                  }}
+                  onMouseEnter={e => { if (!active) e.currentTarget.style.backgroundColor = 'var(--fill-hover)'; }}
+                  onMouseLeave={e => { if (!active) e.currentTarget.style.backgroundColor = 'transparent'; }}
+                >
+                  {chip.icon}
+                  {chip.label}
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -615,6 +677,26 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '32px 14px' }}>
                   <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--foreground)' }}>No results for "{q}"</div>
                 </div>
+              )}
+
+              {/* Case matches */}
+              {!isLoading && caseMatches.length > 0 && (
+                <>
+                  <div style={{ padding: '8px 14px 2px' }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Cases</span>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '4px 14px 8px' }}>
+                    {caseMatches.map(c => (
+                      <CaseChip
+                        key={c.id}
+                        label={c.name}
+                        query={q}
+                        onClick={() => { setIsOpen(false); onQueryChange(''); navigate(`/cases/${c.id}`); }}
+                      />
+                    ))}
+                  </div>
+                  <div style={{ height: 1, backgroundColor: 'var(--border)', margin: '0 14px' }} />
+                </>
               )}
 
               {/* Top Matches */}
