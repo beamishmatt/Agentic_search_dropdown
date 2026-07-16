@@ -24,7 +24,10 @@ import {
   Tag,
   Users,
   Car,
-  Headphones,
+  List,
+  Map as MapIcon,
+  MapPin,
+  Sparkles,
 } from 'lucide-react';
 
 import { Badge } from './ui/badge';
@@ -51,6 +54,7 @@ import { loadTextIndex, findMatches, type Match } from '../lib/pdfTextIndex';
 import { findAttributeMatches, type AttributeMatch } from '../lib/attributeIndex';
 import { PdfViewer } from './PdfViewer';
 import { getContextGraph } from '../storage/config';
+import { chatCompletion, getOpenAIKey } from '../utils/openaiClient';
 
 const RECENT_SEARCHES_KEY = 'command_recent_searches';
 
@@ -275,37 +279,24 @@ function EvidenceRow({
   );
 }
 
-function CaseRow({ c, query }: { c: Case; query: string }) {
+function CaseChip({ c, query, onClick }: { c: Case; query: string; onClick?: () => void }) {
   const [hovered, setHovered] = React.useState(false);
-  const statusColor = c.status === 'Active' ? 'var(--fill-success-strong)' : c.status === 'Closed' ? 'var(--muted-foreground)' : 'var(--fill-warning-strong)';
   return (
-    <div
-      className="w-full text-left flex transition-colors cursor-pointer pr-4"
-      style={{ backgroundColor: hovered ? 'var(--fill-weaker)' : 'transparent' }}
+    <button
+      onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        padding: '6px 12px', borderRadius: 99, border: '1px solid var(--border)',
+        backgroundColor: hovered ? 'var(--fill-hover)' : 'transparent',
+        cursor: 'pointer', fontFamily: 'inherit', transition: 'background-color 0.1s',
+      }}
     >
-      <div className="flex items-center justify-center shrink-0 pl-4">
-        <FolderOpen size={18} style={{ color: '#9ca3af' }} />
-      </div>
-      <div className="flex flex-col py-3 px-3 flex-1 min-w-0">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <p style={{ fontSize: 14, fontWeight: 600, color: '#111827', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, margin: 0 }}
-            dangerouslySetInnerHTML={{ __html: highlightText(c.caseId, query) }} />
-          <span style={{ fontSize: 11, fontWeight: 600, color: statusColor, flexShrink: 0 }}>{c.status}</span>
-        </div>
-        <p style={{ fontSize: 13, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}
-          dangerouslySetInnerHTML={{ __html: [
-            c.owner && highlightText(c.owner, query),
-            c.accessClass,
-            c.lastUpdatedOn && `Updated ${c.lastUpdatedOn.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}`,
-          ].filter(Boolean).join(' • ') }} />
-        {c.description && (
-          <p style={{ fontSize: 13, color: '#9ca3af', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-            dangerouslySetInnerHTML={{ __html: highlightText(c.description, query) }} />
-        )}
-      </div>
-    </div>
+      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--foreground)' }}
+        dangerouslySetInnerHTML={{ __html: highlightText(c.caseId, query) }} />
+      <ArrowUpRight size={13} style={{ color: 'var(--text-weak)', flexShrink: 0 }} />
+    </button>
   );
 }
 
@@ -510,151 +501,155 @@ const KIND_META: Record<string, { label: string; color: string }> = {
   text:     { label: 'Text',     color: '#8b5cf6' },
 };
 
-// ─── Facet helpers ────────────────────────────────────────────────────────────
+// ─── Section header ───────────────────────────────────────────────────────────
 
-const TYPE_LABEL_PLURAL: Record<string, string> = {
-  video: 'Videos', image: 'Images', audio: 'Audio',
-  document: 'Documents', pdf: 'PDFs', text: 'Text',
-};
-
-function TypeIcon({ mediaClass }: { mediaClass: string }) {
-  const s = { size: 14, style: { flexShrink: 0 as const, color: 'var(--text-weak)' } };
-  switch (mediaClass) {
-    case 'video':    return <Video      {...s} />;
-    case 'image':    return <Image      {...s} />;
-    case 'audio':    return <Headphones {...s} />;
-    case 'document': return <FileText   {...s} />;
-    case 'pdf':      return <FileText   {...s} />;
-    default:         return <File       {...s} />;
-  }
-}
-
-function PersonAvatar({ name }: { name: string }) {
-  const initials = name.split(/\s+/).map(w => w[0] ?? '').slice(0, 2).join('').toUpperCase();
+function SectionHeader({ title, count, action }: { title: string; count: number; action?: React.ReactNode }) {
   return (
-    <div style={{ width: 18, height: 18, borderRadius: '50%', backgroundColor: 'var(--fill-weak)', border: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-      <span style={{ fontSize: 7.5, fontWeight: 700, color: 'var(--text-weak)', lineHeight: 1, letterSpacing: '0.01em' }}>{initials}</span>
+    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 6, padding: '12px 20px 6px' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--foreground)' }}>{title}</span>
+        <span style={{ fontSize: 11, color: 'var(--text-weak)' }}>{count}</span>
+      </div>
+      {action}
     </div>
   );
 }
 
-// ─── Facet group ──────────────────────────────────────────────────────────────
+// ─── Assistant overview ───────────────────────────────────────────────────────
 
-function FacetGroup({
-  title,
-  items,
-  activeValue,
-  onSelect,
-  renderIcon,
-  renderLabel,
+function AssistantOverview({
+  summary,
+  suggestions,
+  isLoading,
+  onSuggestionClick,
+  onOpenAssistant,
 }: {
-  title: string;
-  items: [string, number][];
-  activeValue: string | null;
-  onSelect: (value: string | null) => void;
-  renderIcon?: (value: string) => React.ReactNode;
-  renderLabel?: (value: string) => string;
+  summary: string;
+  suggestions: string[];
+  isLoading: boolean;
+  onSuggestionClick: (s: string) => void;
+  onOpenAssistant: () => void;
 }) {
-  const [expanded, setExpanded] = useState(true);
-  if (items.length === 0) return null;
+  if (!isLoading && !summary) return null;
   return (
-    <div style={{ marginBottom: 20 }}>
-      <button
-        onClick={() => setExpanded(e => !e)}
-        style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', background: 'none', border: 'none', padding: '4px 0', cursor: 'pointer', marginBottom: 2, fontFamily: 'inherit' }}
-      >
-        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{title}</span>
-        {expanded ? <ChevronDown size={11} style={{ color: 'var(--text-weak)' }} /> : <ChevronRight size={11} style={{ color: 'var(--text-weak)' }} />}
-      </button>
-      {expanded && (
-        <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-          {items.map(([value, count]) => {
-            const isActive = activeValue === value;
-            const label = renderLabel ? renderLabel(value) : value;
-            return (
-              <li key={value}>
-                <button
-                  onClick={() => onSelect(isActive ? null : value)}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 7,
-                    width: '100%', padding: '5px 6px', borderRadius: 5,
-                    backgroundColor: isActive ? 'var(--fill-weak)' : 'transparent',
-                    border: 'none', cursor: 'pointer', fontFamily: 'inherit',
-                    transition: 'background-color 0.1s',
-                  }}
-                  onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--fill-weaker)'; }}
-                  onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; }}
-                >
-                  {renderIcon && <span style={{ display: 'flex', flexShrink: 0 }}>{renderIcon(value)}</span>}
-                  <span style={{ fontSize: 13, color: 'var(--foreground)', fontWeight: isActive ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left', flex: 1, minWidth: 0 }}>{label}</span>
-                  <span style={{ fontSize: 12, color: 'var(--text-weak)', flexShrink: 0 }}>{count}</span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+    <div style={{ margin: '12px 20px 20px', minHeight: 140 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <Sparkles size={13} style={{ color: '#E07010' }} />
+        <span style={{
+          fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
+          backgroundImage: 'linear-gradient(90deg, #F5C400 0%, #E07010 50%, #3A54A8 100%)',
+          WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent',
+        }}>
+          AI overview
+        </span>
+      </div>
+      {isLoading ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {[92, 78, 55].map((w, i) => (
+            <div key={i} style={{ height: 12, width: `${w}%`, borderRadius: 3, backgroundColor: 'var(--border)' }} className="animate-pulse" />
+          ))}
+        </div>
+      ) : (
+        <>
+          <p style={{ fontSize: 15, color: 'var(--foreground)', lineHeight: 1.6, margin: 0 }}>{summary}</p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 18 }}>
+            {suggestions.map(s => (
+              <button
+                key={s}
+                onClick={() => onSuggestionClick(s)}
+                style={{ display: 'inline-flex', alignItems: 'center', padding: '5px 10px', borderRadius: 99, border: '1px solid var(--border)', backgroundColor: 'var(--base)', fontSize: 12, fontWeight: 500, color: 'var(--foreground)', cursor: 'pointer', fontFamily: 'inherit' }}
+              >
+                {s}
+              </button>
+            ))}
+            <button
+              onClick={onOpenAssistant}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 99, border: '1px solid #111827', backgroundColor: '#111827', fontSize: 12, fontWeight: 500, color: '#ffffff', cursor: 'pointer', fontFamily: 'inherit' }}
+              onMouseEnter={e => (e.currentTarget.style.backgroundColor = '#1f2937')}
+              onMouseLeave={e => (e.currentTarget.style.backgroundColor = '#111827')}
+            >
+              <img src="/evidence/assistant-icon.svg" alt="" style={{ width: 16, height: 16, flexShrink: 0, transform: 'scale(1.4)' }} />
+              Chat with Assistant
+            </button>
+          </div>
+        </>
       )}
     </div>
   );
 }
 
-// ─── Match navigator (Text / Attributes) ──────────────────────────────────────
-
-function MatchNavigator({
-  title,
-  count,
-  activeIdx,
-  onPrev,
-  onNext,
-}: {
-  title: string;
-  count: number;
-  activeIdx: number;
-  onPrev: () => void;
-  onNext: () => void;
-}) {
-  const disabled = count === 0;
-  const arrowBtn: React.CSSProperties = {
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    width: 22, height: 22, borderRadius: 4, border: 'none',
-    background: 'none', color: disabled ? 'var(--border)' : 'var(--text-weak)',
-    cursor: disabled ? 'default' : 'pointer', flexShrink: 0,
-    transition: 'background-color 0.1s',
-  };
+function ShowMoreButton({ remaining, onClick }: { remaining: number; onClick: () => void }) {
   return (
-    <div style={{ marginBottom: 20 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0', marginBottom: 2 }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>{title}</span>
+    <button
+      onClick={onClick}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 4,
+        margin: '2px 12px 8px', padding: '4px 0',
+        background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+        fontSize: 12, fontWeight: 600, color: 'var(--text-weak)',
+      }}
+      onMouseEnter={e => (e.currentTarget.style.color = 'var(--foreground)')}
+      onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-weak)')}
+    >
+      Show {remaining} more
+      <ChevronDown size={12} />
+    </button>
+  );
+}
+
+// ─── Attribute match thumbnail card ──────────────────────────────────────────
+
+function ThumbnailResultCard({
+  result,
+  isSelected,
+  onHover,
+  onClick,
+  checked,
+  onCheck,
+}: {
+  result: SearchEvidenceResult;
+  isSelected: boolean;
+  onHover: () => void;
+  onClick: () => void;
+  checked: boolean;
+  onCheck: (checked: boolean) => void;
+}) {
+  return (
+    <div
+      data-evidence-id={result.evidence_id}
+      onClick={onClick}
+      onMouseEnter={onHover}
+      style={{
+        position: 'relative', cursor: 'pointer', borderRadius: 8, overflow: 'hidden',
+        border: `1px solid ${isSelected ? 'var(--foreground)' : 'var(--border)'}`,
+        backgroundColor: 'var(--fill-weak)',
+      }}
+    >
+      <div style={{ position: 'absolute', top: 6, left: 6, zIndex: 1 }}>
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={e => { e.stopPropagation(); onCheck(e.target.checked); }}
+          onClick={e => e.stopPropagation()}
+          style={{ width: 13, height: 13, cursor: 'pointer', accentColor: '#111827', flexShrink: 0 }}
+        />
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 6px', borderRadius: 5, backgroundColor: 'var(--fill-weaker)' }}>
-        <span style={{ fontSize: 13, color: 'var(--foreground)', flex: 1, minWidth: 0 }}>
-          {count === 0 ? 'No matches' : `${count} ${count === 1 ? 'match' : 'matches'}`}
-        </span>
-        <button
-          onClick={onPrev}
-          disabled={disabled}
-          style={arrowBtn}
-          onMouseEnter={e => { if (!disabled) (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--fill-weak)'; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; }}
-          title="Previous match"
-        >
-          <ChevronLeft size={14} />
-        </button>
-        {count > 0 && (
-          <span style={{ fontSize: 12, color: 'var(--foreground)', flexShrink: 0, minWidth: 16, textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>
-            {activeIdx + 1}
-          </span>
+      <div style={{ width: '100%', aspectRatio: '4 / 3', backgroundColor: 'var(--fill-weak)' }}>
+        {result.thumbnailUrl ? (
+          <img src={result.thumbnailUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+        ) : (
+          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <MediaIcon mediaClass={result.media_class} size={28} />
+          </div>
         )}
-        <button
-          onClick={onNext}
-          disabled={disabled}
-          style={arrowBtn}
-          onMouseEnter={e => { if (!disabled) (e.currentTarget as HTMLElement).style.backgroundColor = 'var(--fill-weak)'; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.backgroundColor = 'transparent'; }}
-          title="Next match"
-        >
-          <ChevronRight size={14} />
-        </button>
+      </div>
+      <div style={{ padding: '8px 10px' }}>
+        <p style={{ fontSize: 12, fontWeight: 500, color: 'var(--foreground)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {result.title}
+        </p>
+        <p style={{ fontSize: 11, color: 'var(--text-weak)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {[result.evidence_id, result.case_id].filter(Boolean).join(' · ')}
+        </p>
       </div>
     </div>
   );
@@ -696,7 +691,7 @@ function CompactRow({
         gridTemplateColumns: '32px 40px 1fr',
         alignItems: 'center',
         gap: 8,
-        padding: '6px 10px 6px 10px',
+        padding: '6px 20px 6px 20px',
         cursor: 'pointer',
         borderLeft: `2px solid ${isSelected ? 'var(--foreground)' : 'transparent'}`,
         backgroundColor: isSelected ? 'var(--fill-weaker)' : 'transparent',
@@ -734,6 +729,90 @@ function CompactRow({
   );
 }
 
+// ─── Results map ──────────────────────────────────────────────────────────────
+
+function hashToUnit(id: string): { x: number; y: number } {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  const x = ((h >>> 0) & 0xffff) / 0xffff;
+  const y = ((h >>> 16) & 0xffff) / 0xffff;
+  return { x, y };
+}
+
+function ResultsMap({
+  items,
+  selectedId,
+  onSelect,
+}: {
+  items: SearchEvidenceResult[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%', backgroundColor: '#eef2f5', overflow: 'hidden' }}>
+      <svg width="100%" height="100%" style={{ position: 'absolute', inset: 0, display: 'block' }} preserveAspectRatio="none">
+        <defs>
+          <pattern id="map-grid-sm" width="32" height="32" patternUnits="userSpaceOnUse">
+            <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#d3dae3" strokeWidth="0.5" />
+          </pattern>
+          <pattern id="map-grid-lg" width="160" height="160" patternUnits="userSpaceOnUse">
+            <rect width="160" height="160" fill="url(#map-grid-sm)" />
+            <path d="M 160 0 L 0 0 0 160" fill="none" stroke="#b9c2cd" strokeWidth="1" />
+          </pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#map-grid-lg)" />
+        {/* A river / arterial curve and a couple of cross streets for map feel */}
+        <path d="M -20,140 C 80,90 180,200 320,150 S 520,120 640,170" stroke="#9bb7d4" strokeWidth="14" fill="none" opacity="0.55" strokeLinecap="round" />
+        <path d="M 60,0 L 60,9999" stroke="#c2cad6" strokeWidth="2" />
+        <path d="M 0,260 L 9999,260" stroke="#c2cad6" strokeWidth="2" />
+        <path d="M 280,0 L 280,9999" stroke="#c2cad6" strokeWidth="2" />
+      </svg>
+      <div style={{ position: 'absolute', top: 10, left: 12, fontSize: 11, color: '#64748b', fontFamily: "'IBM Plex Sans', sans-serif", letterSpacing: '0.05em', textTransform: 'uppercase', fontWeight: 600 }}>
+        Pelican Bay · 8th District
+      </div>
+      {items.map(r => {
+        const { x, y } = hashToUnit(r.evidence_id);
+        const isSelected = r.evidence_id === selectedId;
+        return (
+          <button
+            key={r.evidence_id}
+            onClick={() => onSelect(r.evidence_id)}
+            title={r.title}
+            style={{
+              position: 'absolute',
+              left: `${8 + x * 84}%`,
+              top: `${10 + y * 78}%`,
+              transform: 'translate(-50%, -100%)',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              padding: 0,
+              zIndex: isSelected ? 2 : 1,
+              filter: isSelected ? 'drop-shadow(0 3px 5px rgba(0,0,0,0.35))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.2))',
+              transition: 'filter 0.1s',
+            }}
+          >
+            <MapPin
+              size={isSelected ? 30 : 22}
+              fill={isSelected ? '#fec62e' : '#dc2626'}
+              color={isSelected ? '#92400e' : '#7f1d1d'}
+              strokeWidth={1.5}
+            />
+          </button>
+        );
+      })}
+      {items.length === 0 && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <p style={{ fontSize: 13, color: '#64748b', margin: 0 }}>No results to plot.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Meta field ───────────────────────────────────────────────────────────────
 
 function MetaField({ label, value }: { label: string; value?: string | null }) {
@@ -759,6 +838,7 @@ function DocPreview({
 }) {
   const [page, setPage] = React.useState(1);
   const [totalPages, setTotalPages] = React.useState(1);
+  const [contentHeight, setContentHeight] = React.useState<number | null>(null);
 
   React.useEffect(() => {
     if (scrollToMatch) setPage(scrollToMatch.pageIndex + 1);
@@ -768,9 +848,12 @@ function DocPreview({
     setPage(1);
   }, [fileUrl]);
 
+  // Fallback height until the first page renders and reports its size.
+  const FALLBACK_HEIGHT = 'clamp(320px, 78vh, 1400px)';
+
   if (!fileUrl) {
     return (
-      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ width: '100%', height: FALLBACK_HEIGHT, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <FileText size={32} style={{ color: '#4b5563', opacity: 0.5 }} />
       </div>
     );
@@ -781,21 +864,22 @@ function DocPreview({
     return (
       <iframe
         src={`${fileUrl}#toolbar=0&navpanes=0`}
-        style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
+        style={{ width: '100%', height: FALLBACK_HEIGHT, border: 'none', display: 'block' }}
         title="Document preview"
       />
     );
   }
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', backgroundColor: '#1c1c1e' }}>
-      <div style={{ flex: 1, minHeight: 0 }}>
+    <div style={{ width: '100%', display: 'flex', flexDirection: 'column', backgroundColor: '#1c1c1e' }}>
+      <div style={{ height: contentHeight ?? FALLBACK_HEIGHT }}>
         <PdfViewer
           fileUrl={fileUrl}
           searchQuery={searchQuery}
           page={page}
           onTotalPagesChange={setTotalPages}
           scrollToMatch={scrollToMatch}
+          onContentHeightChange={setContentHeight}
         />
       </div>
       {totalPages > 1 && (
@@ -888,7 +972,7 @@ function PreviewPane({
       {(() => {
         const isDoc = ['document', 'pdf', 'text'].includes(result.media_class);
         return (
-          <div style={{ flexShrink: 0, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)', backgroundColor: 'var(--fill-weak)', ...(isDoc ? { height: 'clamp(320px, 78vh, 1400px)' } : { aspectRatio: '16 / 10' }) }}>
+          <div style={{ flexShrink: 0, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)', backgroundColor: 'var(--fill-weak)', ...(isDoc ? {} : { aspectRatio: '16 / 10' }) }}>
             {isDoc ? (
               <DocPreview fileUrl={result.fileUrl} searchQuery={searchQuery} scrollToMatch={scrollToMatch} />
             ) : result.thumbnailUrl ? (
@@ -945,7 +1029,7 @@ function SkeletonRow() {
       gridTemplateColumns: '32px 40px 1fr',
       alignItems: 'center',
       gap: 8,
-      padding: '6px 10px',
+      padding: '6px 20px',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <div style={{ width: 13, height: 13, borderRadius: 2, backgroundColor: 'var(--border)' }} className="animate-pulse" />
@@ -1023,7 +1107,11 @@ export function SearchTakeover() {
   const [attributeMatches, setAttributeMatches] = useState<AttributeMatch[]>([]);
   const [activeAttrIdx, setActiveAttrIdx] = useState(0);
   const [textIndexReady, setTextIndexReady] = useState(false);
+  const [resultsView, setResultsView] = useState<'list' | 'map'>('list');
   const resultsListRef = useRef<HTMLDivElement | null>(null);
+  // Skip the selected-row auto-scroll for the first selection of a fresh result
+  // set, so the AI overview at the top stays in view on load.
+  const skipSelectedScrollRef = useRef(true);
   const [activeChips, setActiveChips] = useState<FilterChip[]>(initialOutput?.chips ?? []);
   const [selectedScopes, setSelectedScopes] = useState<Set<string>>(new Set());
   const searchFilters = useSearchFilters();
@@ -1034,26 +1122,23 @@ export function SearchTakeover() {
   const [chatSkill, setChatSkill] = useState<string | null>(null);
   const [openDraft, setOpenDraft] = useState<DraftReport | null>(null);
 
-  const checkedEvidenceItems: GraphNode[] = [...checkedIds].map(id => {
-    const r = searchOutput?.results.find(r => r.evidence_id === id);
-    if (!r) return null;
-    return {
-      id: r.evidence_id,
-      title: r.title,
-      media_class: r.media_class,
-      mime_type: '',
-      size: 0,
-      case_id: r.case_id,
-      date_recorded: r.date_recorded ?? '',
-      date_ingested: '',
-      officer: r.officer,
-      category: r.category,
-      status: '',
-      objects_detected: [],
-      description: r.relevance || r.excerpt || '',
-      thumbnailUrl: r.thumbnailUrl,
-    } as GraphNode;
-  }).filter((x): x is GraphNode => x !== null);
+  const toGraphNode = (r: SearchEvidenceResult): GraphNode => ({
+    id: r.evidence_id,
+    title: r.title,
+    media_class: r.media_class,
+    mime_type: '',
+    size: 0,
+    case_id: r.case_id,
+    date_recorded: r.date_recorded ?? '',
+    date_ingested: '',
+    officer: r.officer,
+    category: r.category,
+    status: '',
+    objects_detected: [],
+    description: r.relevance || r.excerpt || '',
+    thumbnailUrl: r.thumbnailUrl,
+  } as GraphNode);
+
 
   const sendChatMessage = async (text: string, history: ChatMessage[], items: GraphNode[]) => {
     const assistantId = `asst-${Date.now()}`;
@@ -1151,7 +1236,7 @@ export function SearchTakeover() {
   const handleChatSend = (text: string) => {
     const userMsg: ChatMessage = { id: `user-${Date.now()}`, role: 'user', text };
     setChatMessages(prev => [...prev, userMsg]);
-    sendChatMessage(text, [...chatMessages, userMsg], checkedEvidenceItems);
+    sendChatMessage(text, [...chatMessages, userMsg], chatContextItems);
   };
 
   const handleMetadataEditApply = (msgId: string, editId: string) => {
@@ -1227,10 +1312,15 @@ export function SearchTakeover() {
     return () => window.removeEventListener('keydown', handler);
   }, [navigate]);
 
-  // Auto-run search only if no pre-loaded output was provided
+  // Auto-run search only if no pre-loaded output was provided. If the page was
+  // opened with no usable query and no results, there's nothing to show here —
+  // send the user to the Evidence page instead of a bare recent-searches list.
   useEffect(() => {
-    if (!initialOutput && initialQuery && initialQuery.trim().length >= 3) {
+    if (initialOutput) return;
+    if (initialQuery && initialQuery.trim().length >= 3) {
       runSearch(initialQuery.trim());
+    } else {
+      navigate('/evidence', { replace: true });
     }
   }, []); // intentionally only on mount
 
@@ -1352,65 +1442,33 @@ export function SearchTakeover() {
 
   const matchedCases: Case[] = React.useMemo(() => {
     const caseIds = [...new Set(entityCases.map(e => e.id))];
-    return caseIds.map(id => mockCases.find(c => c.caseId === id)).filter(Boolean) as Case[];
+    // Include every distinct case from the results. If a case isn't in the
+    // mockCases catalog, synthesize a minimal stub so it still counts and
+    // renders rather than being silently dropped.
+    return caseIds.map(id => mockCases.find(c => c.caseId === id) ?? {
+      caseId: id,
+      owner: '',
+      createdOn: new Date(),
+      lastUpdatedOn: new Date(),
+      status: 'Active' as const,
+      description: '',
+      accessClass: 'Unrestricted' as const,
+    });
   }, [entityCases]);
 
   const evidenceItems = searchOutput
     ? searchFilters.filterResults(searchOutput.results)
     : [];
 
-  const [activeFacetType, setActiveFacetType] = useState<string | null>(null);
-  const [activeFacetCase, setActiveFacetCase] = useState<string | null>(null);
-  const [activeFacetPerson, setActiveFacetPerson] = useState<string | null>(null);
-  const [activeFacetStatus, setActiveFacetStatus] = useState<string | null>(null);
-  const [activeFacetDate, setActiveFacetDate] = useState<string | null>(null);
-
-  const typeFacets = React.useMemo(() => {
-    const counts: Record<string, number> = {};
-    evidenceItems.forEach(r => { const k = r.media_class || 'unknown'; counts[k] = (counts[k] || 0) + 1; });
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]) as [string, number][];
-  }, [evidenceItems]);
-
-  const caseFacets = React.useMemo(() => {
-    const counts: Record<string, number> = {};
-    evidenceItems.forEach(r => { if (r.case_id) counts[r.case_id] = (counts[r.case_id] || 0) + 1; });
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 8) as [string, number][];
-  }, [evidenceItems]);
-
-  const peopleFacets = React.useMemo(() => {
-    const counts: Record<string, number> = {};
-    evidenceItems.forEach(r => { if (r.officer) counts[r.officer] = (counts[r.officer] || 0) + 1; });
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 8) as [string, number][];
-  }, [evidenceItems]);
-
-  const statusFacets = React.useMemo(() => {
-    const counts: Record<string, number> = {};
-    evidenceItems.forEach(r => { const s = (r as any).status; if (s) counts[s] = (counts[s] || 0) + 1; });
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]) as [string, number][];
-  }, [evidenceItems]);
-
-  const dateFacets = React.useMemo(() => {
-    const counts: Record<string, number> = {};
-    evidenceItems.forEach(r => {
-      if (r.date_recorded) {
-        const d = new Date(r.date_recorded).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
-        counts[d] = (counts[d] || 0) + 1;
-      }
-    });
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]) as [string, number][];
-  }, [evidenceItems]);
-
-  const facetFilteredItems = React.useMemo(() => {
+  // Group results the way Google groups a SERP: cases, then attribute
+  // (visual) matches, then everything else — with exact text matches ranked
+  // first within that general list, in its original AI ranking after that.
+  // Each evidence item appears in exactly one group — whichever is highest
+  // priority — so nothing is double-listed.
+  const { attributeGroupItems, otherGroupItems, allEvidenceItems } = React.useMemo(() => {
     const byId = new Map<string, SearchEvidenceResult>();
     for (const r of evidenceItems) byId.set(r.evidence_id, r);
 
-    // Surface any doc with an exact text match or attribute match that the
-    // AI search omitted, so the list highlight has a row to scroll to when
-    // the user cycles either navigator.
-    const matchOrder = new Map<string, number>();
-    matches.forEach((m, i) => { if (!matchOrder.has(m.evidenceId)) matchOrder.set(m.evidenceId, i); });
-    const attrOrder = new Map<string, number>();
-    attributeMatches.forEach((m, i) => { if (!attrOrder.has(m.evidenceId)) attrOrder.set(m.evidenceId, i); });
     const graph = getContextGraph();
     const ensureNode = (id: string) => {
       if (byId.has(id)) return;
@@ -1431,41 +1489,94 @@ export function SearchTakeover() {
         date_recorded: node.date_recorded,
       });
     };
-    for (const id of matchOrder.keys()) ensureNode(id);
+
+    // Surface any doc with an exact text match or attribute match that the
+    // AI search omitted, in first-occurrence order (highest relevance first).
+    const attrOrder = new Map<string, number>();
+    attributeMatches.forEach((m, i) => { if (!attrOrder.has(m.evidenceId)) attrOrder.set(m.evidenceId, i); });
     for (const id of attrOrder.keys()) ensureNode(id);
 
-    const filtered = [...byId.values()].filter(r => {
-      if (activeFacetType && r.media_class !== activeFacetType) return false;
-      if (activeFacetCase && r.case_id !== activeFacetCase) return false;
-      if (activeFacetPerson && r.officer !== activeFacetPerson) return false;
-      if (activeFacetStatus && (r as any).status !== activeFacetStatus) return false;
-      if (activeFacetDate && r.date_recorded) {
-        const d = new Date(r.date_recorded).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
-        if (d !== activeFacetDate) return false;
-      }
-      return true;
-    });
+    const matchOrder = new Map<string, number>();
+    matches.forEach((m, i) => { if (!matchOrder.has(m.evidenceId) && !attrOrder.has(m.evidenceId)) matchOrder.set(m.evidenceId, i); });
+    for (const id of matchOrder.keys()) ensureNode(id);
 
-    // Stable sort: text-matched docs first, then attribute-matched docs,
-    // then everything else in its original AI ranking.
-    const aiOrder = new Map<string, number>();
-    evidenceItems.forEach((r, i) => aiOrder.set(r.evidence_id, i));
-    const tier = (id: string) => {
-      if (matchOrder.has(id)) return 0;
-      if (attrOrder.has(id)) return 1;
-      return 2;
+    const byOrder = (order: Map<string, number>) =>
+      [...order.keys()]
+        .map(id => byId.get(id))
+        .filter((r): r is SearchEvidenceResult => !!r)
+        .sort((a, b) => order.get(a.evidence_id)! - order.get(b.evidence_id)!);
+
+    const attributeGroupItems = byOrder(attrOrder);
+    const textMatchItems = byOrder(matchOrder);
+    const restItems = evidenceItems.filter(
+      r => !attrOrder.has(r.evidence_id) && !matchOrder.has(r.evidence_id)
+    );
+    const otherGroupItems = [...textMatchItems, ...restItems];
+
+    return {
+      attributeGroupItems,
+      otherGroupItems,
+      allEvidenceItems: [...attributeGroupItems, ...otherGroupItems],
     };
-    return filtered.sort((a, b) => {
-      const ta = tier(a.evidence_id);
-      const tb = tier(b.evidence_id);
-      if (ta !== tb) return ta - tb;
-      if (ta === 0) return matchOrder.get(a.evidence_id)! - matchOrder.get(b.evidence_id)!;
-      if (ta === 1) return attrOrder.get(a.evidence_id)! - attrOrder.get(b.evidence_id)!;
-      const ao = aiOrder.get(a.evidence_id) ?? Number.MAX_SAFE_INTEGER;
-      const bo = aiOrder.get(b.evidence_id) ?? Number.MAX_SAFE_INTEGER;
-      return ao - bo;
+  }, [evidenceItems, matches, attributeMatches]);
+
+  const ROW_CAP = 5;
+  const THUMB_CAP = 6;
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
+  const toggleSection = (key: string) => setExpandedSections(prev => ({ ...prev, [key]: true }));
+
+  // Resolve an evidence result to its full graph node (which carries
+  // vector_file_id / text_visible / objects needed for retrieval); fall back
+  // to a lightweight node when the item isn't in the graph.
+  const resolveChatNode = (r: SearchEvidenceResult): GraphNode =>
+    getContextGraph().nodes[r.evidence_id] ?? toGraphNode(r);
+
+  // Chat context: the explicit checked selection when present, otherwise the
+  // entire displayed result set (all groups) — so "Chat with Assistant" in the
+  // AI overview talks to every returned item, across all cases, not just one.
+  const chatContextItems: GraphNode[] = (checkedIds.size > 0
+    ? allEvidenceItems.filter(r => checkedIds.has(r.evidence_id))
+    : allEvidenceItems
+  ).map(resolveChatNode);
+
+  // ── AI overview: summarize the actual displayed results corpus ──────────────
+  // Stable signature of what's shown so we only re-summarize when the set changes.
+  const corpusSignature = allEvidenceItems.map(r => r.evidence_id).join(',');
+  const [corpusSummary, setCorpusSummary] = useState('');
+  const [corpusSummaryLoading, setCorpusSummaryLoading] = useState(false);
+  const corpusSummaryVersion = useRef(0);
+
+  useEffect(() => {
+    if (!committedQuery.trim() || allEvidenceItems.length === 0) {
+      setCorpusSummary('');
+      return;
+    }
+    const version = ++corpusSummaryVersion.current;
+    // Fall back to the engine's summary when no LLM key is configured.
+    if (!getOpenAIKey()) {
+      setCorpusSummary(searchOutput?.summary ?? '');
+      return;
+    }
+    setCorpusSummaryLoading(true);
+    const corpus = allEvidenceItems.slice(0, 40).map(r =>
+      `- "${r.title}" (${r.media_class}${r.category ? `, ${r.category}` : ''}${r.case_id ? `, case ${r.case_id}` : ''}${r.officer ? `, ${r.officer}` : ''})${r.excerpt ? ` — ${r.excerpt}` : ''}`
+    ).join('\n');
+    chatCompletion(
+      [
+        { role: 'system', content: 'You are an evidence search assistant. Given a query and the list of evidence results shown to the user, write a concise 2-3 sentence overview summarizing what the results collectively contain — highlight the cases, people, media types, and themes present. Plain text only, no markdown.' },
+        { role: 'user', content: `Query: "${committedQuery}"\n\nResults shown (${allEvidenceItems.length} items):\n${corpus}` },
+      ],
+      { model: 'gpt-4o-mini', temperature: 0.2, max_tokens: 220 }
+    ).then(text => {
+      if (version !== corpusSummaryVersion.current) return;
+      setCorpusSummary(text.trim());
+    }).catch(() => {
+      if (version !== corpusSummaryVersion.current) return;
+      setCorpusSummary(searchOutput?.summary ?? '');
+    }).finally(() => {
+      if (version === corpusSummaryVersion.current) setCorpusSummaryLoading(false);
     });
-  }, [evidenceItems, matches, attributeMatches, activeFacetType, activeFacetCase, activeFacetPerson, activeFacetStatus, activeFacetDate]);
+  }, [corpusSignature, committedQuery]);
 
   // Load the prebuilt PDF text index once.
   useEffect(() => {
@@ -1506,22 +1617,21 @@ export function SearchTakeover() {
     if (activeAttr) setSelectedId(activeAttr.evidenceId);
   }, [activeAttr?.evidenceId]);
 
-  const cycleAttr = (direction: 1 | -1) => {
-    if (attributeMatches.length === 0) return;
-    setActiveAttrIdx(i => (i + direction + attributeMatches.length) % attributeMatches.length);
-  };
+  // On a fresh result set (new query), reset the results list to the top so the
+  // AI overview is visible, and arm the skip so the first auto-select below
+  // doesn't scroll it back out of view.
+  useEffect(() => {
+    skipSelectedScrollRef.current = true;
+    resultsListRef.current?.scrollTo({ top: 0 });
+  }, [committedQuery]);
 
   // Auto-scroll the selected row into view in the results list.
   useEffect(() => {
     if (!selectedId || !resultsListRef.current) return;
+    if (skipSelectedScrollRef.current) { skipSelectedScrollRef.current = false; return; }
     const row = resultsListRef.current.querySelector<HTMLElement>(`[data-evidence-id="${CSS.escape(selectedId)}"]`);
     if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }, [selectedId]);
-
-  const cycleMatch = (direction: 1 | -1) => {
-    if (matches.length === 0) return;
-    setActiveMatchIdx(i => (i + direction + matches.length) % matches.length);
-  };
 
   return (
     <div className="h-full flex flex-col">
@@ -1594,117 +1704,202 @@ export function SearchTakeover() {
             /* Results state — V4 3-column layout */
             <div style={{ flex: 1, overflow: 'hidden', display: 'flex', minHeight: 0 }}>
 
-              {/* Facet rail — 200px */}
-              <aside style={{ width: 200, flexShrink: 0, overflowY: 'auto', padding: '16px 12px', borderRight: '1px solid var(--border)', scrollbarWidth: 'none' }}>
-                <FacetGroup
-                  title="Type"
-                  items={typeFacets}
-                  activeValue={activeFacetType}
-                  onSelect={setActiveFacetType}
-                  renderIcon={v => <TypeIcon mediaClass={v} />}
-                  renderLabel={v => TYPE_LABEL_PLURAL[v] ?? KIND_META[v]?.label ?? v}
-                />
-                {committedQuery.trim() && (
-                  <>
-                    <MatchNavigator
-                      title="Text"
-                      count={matches.length}
-                      activeIdx={activeMatchIdx}
-                      onPrev={() => cycleMatch(-1)}
-                      onNext={() => cycleMatch(1)}
-                    />
-                    <MatchNavigator
-                      title="Attributes"
-                      count={attributeMatches.length}
-                      activeIdx={activeAttrIdx}
-                      onPrev={() => cycleAttr(-1)}
-                      onNext={() => cycleAttr(1)}
-                    />
-                  </>
-                )}
-                <FacetGroup
-                  title="Case"
-                  items={caseFacets}
-                  activeValue={activeFacetCase}
-                  onSelect={setActiveFacetCase}
-                />
-                <FacetGroup
-                  title="People"
-                  items={peopleFacets}
-                  activeValue={activeFacetPerson}
-                  onSelect={setActiveFacetPerson}
-                  renderIcon={v => <PersonAvatar name={v} />}
-                />
-                <FacetGroup
-                  title="Status"
-                  items={statusFacets}
-                  activeValue={activeFacetStatus}
-                  onSelect={setActiveFacetStatus}
-                />
-                <FacetGroup
-                  title="Date"
-                  items={dateFacets}
-                  activeValue={activeFacetDate}
-                  onSelect={setActiveFacetDate}
-                />
-              </aside>
-
               {/* Results list — fluid, 420–580px */}
-              <div style={{ flex: '1 1 420px', minWidth: 380, maxWidth: 580, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)' }}>
+              <div style={{ flex: '1.9 1 65%', minWidth: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    {isLoading ? 'Searching…' : `${facetFilteredItems.length} ${facetFilteredItems.length === 1 ? 'result' : 'results'}`}
-                  </span>
-                  {facetFilteredItems.length > 0 && (
+                  {isLoading && allEvidenceItems.length === 0 ? (
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Searching…
+                    </span>
+                  ) : allEvidenceItems.length === 0 ? (
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      No results
+                    </span>
+                  ) : (
                     <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
                       <input
                         type="checkbox"
-                        checked={facetFilteredItems.every(r => checkedIds.has(r.evidence_id))}
+                        checked={allEvidenceItems.every(r => checkedIds.has(r.evidence_id))}
                         ref={el => {
-                          if (el) el.indeterminate = checkedIds.size > 0 && !facetFilteredItems.every(r => checkedIds.has(r.evidence_id));
+                          if (el) el.indeterminate = checkedIds.size > 0 && !allEvidenceItems.every(r => checkedIds.has(r.evidence_id));
                         }}
                         onChange={() => {
-                          const allSelected = facetFilteredItems.every(r => checkedIds.has(r.evidence_id));
-                          setCheckedIds(allSelected ? new Set() : new Set(facetFilteredItems.map(r => r.evidence_id)));
+                          const allSelected = allEvidenceItems.every(r => checkedIds.has(r.evidence_id));
+                          setCheckedIds(allSelected ? new Set() : new Set(allEvidenceItems.map(r => r.evidence_id)));
                         }}
                         style={{ width: 13, height: 13, cursor: 'pointer', accentColor: '#111827' }}
                       />
-                      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-weak)' }}>Select all</span>
+                      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-weak)' }}>
+                        Select all {allEvidenceItems.length} {allEvidenceItems.length === 1 ? 'result' : 'results'}
+                      </span>
                     </label>
                   )}
-                </div>
-                <div ref={resultsListRef} style={{ flex: 1, overflowY: 'auto', scrollbarWidth: 'none' }} className="[&::-webkit-scrollbar]:hidden">
-                  {isLoading && facetFilteredItems.length === 0
-                    ? Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)
-                    : facetFilteredItems.map(result => (
-                        <CompactRow
-                          key={result.evidence_id}
-                          result={result}
-                          isSelected={result.evidence_id === selectedId}
-                          query={query}
-                          onHover={() => setSelectedId(result.evidence_id)}
-                          onClick={() => setSelectedId(result.evidence_id)}
-                          checked={checkedIds.has(result.evidence_id)}
-                          onCheck={c => {
-                            setCheckedIds(prev => {
-                              const next = new Set(prev);
-                              c ? next.add(result.evidence_id) : next.delete(result.evidence_id);
-                              return next;
-                            });
-                          }}
-                        />
-                      ))
-                  }
-                  {facetFilteredItems.length === 0 && !isLoading && (
-                    <div style={{ padding: '40px 16px', textAlign: 'center' }}>
-                      <p style={{ fontSize: 13, color: 'var(--text-weak)', margin: 0 }}>No results match the selected filters.</p>
+                  {allEvidenceItems.length > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', borderRadius: 6, border: '1px solid var(--border)', overflow: 'hidden' }}>
+                        {(['list', 'map'] as const).map(view => {
+                          const Icon = view === 'list' ? List : MapIcon;
+                          const active = resultsView === view;
+                          return (
+                            <button
+                              key={view}
+                              onClick={() => setResultsView(view)}
+                              title={view === 'list' ? 'List view' : 'Map view'}
+                              style={{
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                width: 26, height: 22, border: 'none', cursor: 'pointer', padding: 0,
+                                backgroundColor: active ? 'var(--foreground)' : 'transparent',
+                                color: active ? '#ffffff' : 'var(--text-weak)',
+                                transition: 'background-color 0.1s, color 0.1s',
+                              }}
+                            >
+                              <Icon size={13} />
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
                 </div>
+                {resultsView === 'list' ? (
+                  <div ref={resultsListRef} style={{ flex: 1, overflowY: 'auto', scrollbarWidth: 'none' }} className="[&::-webkit-scrollbar]:hidden">
+                    {committedQuery.trim() && (
+                      <AssistantOverview
+                        summary={corpusSummary || (searchOutput?.summary ?? '')}
+                        suggestions={searchOutput?.suggestions ?? []}
+                        isLoading={corpusSummaryLoading || (isLoading && !corpusSummary && !searchOutput?.summary)}
+                        onSuggestionClick={(s) => { setAssistantOpen(true); handleChatSend(s); }}
+                        onOpenAssistant={() => setAssistantOpen(true)}
+                      />
+                    )}
+                    {isLoading && allEvidenceItems.length === 0 ? (
+                      Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)
+                    ) : (
+                      <>
+                        {/* Cases */}
+                        {matchedCases.length > 0 && (() => {
+                          const expanded = expandedSections.cases;
+                          const visible = expanded ? matchedCases : matchedCases.slice(0, ROW_CAP);
+                          const remaining = matchedCases.length - visible.length;
+                          return (
+                            <div style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', paddingTop: 16, paddingBottom: 16 }}>
+                              <SectionHeader
+                                title="Cases"
+                                count={matchedCases.length}
+                                action={(
+                                  <button
+                                    onClick={() => navigate('/cases')}
+                                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 600, color: '#60a5fa' }}
+                                    onMouseEnter={e => (e.currentTarget.style.color = '#3b82f6')}
+                                    onMouseLeave={e => (e.currentTarget.style.color = '#60a5fa')}
+                                  >
+                                    See all
+                                  </button>
+                                )}
+                              />
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '0 20px 8px' }}>
+                                {visible.map(c => (
+                                  <CaseChip key={c.caseId} c={c} query={query} onClick={() => handleViewCase(c.caseId)} />
+                                ))}
+                              </div>
+                              {remaining > 0 && <ShowMoreButton remaining={remaining} onClick={() => toggleSection('cases')} />}
+                            </div>
+                          );
+                        })()}
+
+                        {/* Attribute matches — thumbnail grid */}
+                        {attributeGroupItems.length > 0 && (() => {
+                          const expanded = expandedSections.attributes;
+                          const visible = expanded ? attributeGroupItems : attributeGroupItems.slice(0, THUMB_CAP);
+                          const remaining = attributeGroupItems.length - visible.length;
+                          return (
+                            <div style={{ borderBottom: '1px solid var(--border)', paddingTop: 16, paddingBottom: 16 }}>
+                              <SectionHeader
+                                title="Attribute matches"
+                                count={attributeGroupItems.length}
+                                action={(
+                                  <button
+                                    onClick={() => navigate('/evidence')}
+                                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 600, color: '#60a5fa' }}
+                                    onMouseEnter={e => (e.currentTarget.style.color = '#3b82f6')}
+                                    onMouseLeave={e => (e.currentTarget.style.color = '#60a5fa')}
+                                  >
+                                    See all
+                                  </button>
+                                )}
+                              />
+                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 10, padding: '0 20px 8px' }}>
+                                {visible.map(result => (
+                                  <ThumbnailResultCard
+                                    key={result.evidence_id}
+                                    result={result}
+                                    isSelected={result.evidence_id === selectedId}
+                                    onHover={() => setSelectedId(result.evidence_id)}
+                                    onClick={() => setSelectedId(result.evidence_id)}
+                                    checked={checkedIds.has(result.evidence_id)}
+                                    onCheck={c => {
+                                      setCheckedIds(prev => {
+                                        const next = new Set(prev);
+                                        c ? next.add(result.evidence_id) : next.delete(result.evidence_id);
+                                        return next;
+                                      });
+                                    }}
+                                  />
+                                ))}
+                              </div>
+                              {remaining > 0 && <ShowMoreButton remaining={remaining} onClick={() => toggleSection('attributes')} />}
+                            </div>
+                          );
+                        })()}
+
+                        {/* Everything else — text matches ranked first within this list */}
+                        {otherGroupItems.length > 0 && (() => {
+                          const hasGroupsAbove = matchedCases.length > 0 || attributeGroupItems.length > 0;
+                          return (
+                            <div style={{ paddingTop: 20, paddingBottom: 20 }}>
+                              {hasGroupsAbove && <SectionHeader title="More results" count={otherGroupItems.length} />}
+                              {otherGroupItems.map(result => (
+                                <CompactRow
+                                  key={result.evidence_id}
+                                  result={result}
+                                  isSelected={result.evidence_id === selectedId}
+                                  query={query}
+                                  onHover={() => setSelectedId(result.evidence_id)}
+                                  onClick={() => setSelectedId(result.evidence_id)}
+                                  checked={checkedIds.has(result.evidence_id)}
+                                  onCheck={c => {
+                                    setCheckedIds(prev => {
+                                      const next = new Set(prev);
+                                      c ? next.add(result.evidence_id) : next.delete(result.evidence_id);
+                                      return next;
+                                    });
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          );
+                        })()}
+                      </>
+                    )}
+                    {allEvidenceItems.length === 0 && matchedCases.length === 0 && !isLoading && (
+                      <div style={{ padding: '40px 16px', textAlign: 'center' }}>
+                        <p style={{ fontSize: 13, color: 'var(--text-weak)', margin: 0 }}>No results match the selected filters.</p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ flex: 1, minHeight: 0 }}>
+                    <ResultsMap
+                      items={allEvidenceItems}
+                      selectedId={selectedId}
+                      onSelect={setSelectedId}
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Preview pane — fully fluid, fills remaining width */}
-              <div style={{ flex: '2 1 600px', minWidth: 0, overflow: 'hidden' }}>
+              <div style={{ flex: '1 1 35%', minWidth: 0, overflow: 'hidden' }}>
                 {isLoading && !selectedEvidence ? (
                   <SkeletonPreview />
                 ) : selectedEvidence ? (
@@ -1752,11 +1947,11 @@ export function SearchTakeover() {
           onSend={handleChatSend}
           onSelectEvidence={() => {}}
           evidenceOpen={false}
-          evidenceCount={checkedIds.size}
+          evidenceCount={chatContextItems.length}
           isStreaming={chatStreamingId !== null}
           skill={chatSkill}
           onSkillChange={setChatSkill}
-          evidenceItems={checkedEvidenceItems}
+          evidenceItems={chatContextItems}
           onOpenDraft={setOpenDraft}
           draftOpen={!!openDraft}
           onToolCallApprove={handleToolCallApprove}

@@ -31,7 +31,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { SCOPE_CHIPS } from '../SearchDropdown';
-import assistantIcon from '../../assets/aiera.svg';
+import assistantIcon from '../../assets/assistant-icon.svg';
 import { chatWithEvidenceStream, ChatMessage as EngineChatMessage } from '../../engine/assistantChat';
 import { Checkbox } from '../ui/checkbox';
 import { ThinkingBlock, DraftCard, DraftDrawer, ToolCall, ToolCallCard, MetadataEditCard, parseActions, parseMetadataEdits, stripActionTags, stripMetadataEditTags, FeatureRequestCard, parseFeatureRequest, stripFeatureRequestTags } from '../AssistantPanel';
@@ -1537,7 +1537,7 @@ export function ChatDrawer({
       </div>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-        <img src={assistantIcon} alt="Assistant" style={{ width: 32, height: 32 }} />
+        <img src={assistantIcon} alt="Assistant" style={{ width: 32, height: 32, animation: isStreaming ? 'spin 1.2s linear infinite' : undefined }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <button
             onClick={onNewChat}
@@ -1733,7 +1733,15 @@ export function ChatDrawer({
           )}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <SkillsDropdown value={skill} onChange={onSkillChange} onSelectEvidence={onSelectEvidence} evidenceCount={evidenceCount} />
+              <button
+                onClick={onSelectEvidence}
+                title="Add"
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 7, border: 'none', background: 'none', color: 'var(--muted-foreground)', cursor: 'pointer' }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--fill-hover)')}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+              >
+                <Plus size={18} />
+              </button>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <button
@@ -1741,7 +1749,7 @@ export function ChatDrawer({
                 disabled={isStreaming}
                 style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 7, border: 'none', background: 'none', color: isListening ? 'var(--fill-key-strong)' : 'var(--muted-foreground)', cursor: isStreaming ? 'default' : 'pointer' }}
               >
-                {isListening ? <Square size={11} fill="currentColor" /> : <Mic size={13} />}
+                {isListening ? <Square size={13} fill="currentColor" /> : <Mic size={17} />}
               </button>
               <button
                 onClick={handleSend}

@@ -1176,7 +1176,7 @@ export function AssistantPanel({ isOpen, items, onClose, onAction }: AssistantPa
         </div>
 
         {/* Messages */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
           {/* Greeting */}
           {messages.length === 0 && (
             <p style={mdStyles}>

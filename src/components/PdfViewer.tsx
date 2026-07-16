@@ -19,6 +19,8 @@ type PdfViewerProps = {
   page: number;
   onTotalPagesChange: (n: number) => void;
   scrollToMatch?: ScrollTarget;
+  /** Reports the rendered page height (px) so a parent can size to fit its content. */
+  onContentHeightChange?: (height: number) => void;
 };
 
 const HIGHLIGHT_BG = 'rgba(254,198,46,0.5)';
@@ -41,6 +43,7 @@ export function PdfViewer({
   page,
   onTotalPagesChange,
   scrollToMatch,
+  onContentHeightChange,
 }: PdfViewerProps) {
   const wrapperRef = React.useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = React.useState<number>(0);
@@ -118,12 +121,17 @@ export function PdfViewer({
   );
 
   const handlePageRenderSuccess = React.useCallback(() => {
-    if (!activeKey || !wrapperRef.current) return;
-    const node = wrapperRef.current.querySelector<HTMLElement>(
-      `mark[data-match-key="${CSS.escape(activeKey)}"]`,
-    );
-    if (node) node.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  }, [activeKey]);
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    const pageEl = wrapper.querySelector<HTMLElement>('.react-pdf__Page');
+    if (pageEl) onContentHeightChange?.(pageEl.offsetHeight);
+    if (activeKey) {
+      const node = wrapper.querySelector<HTMLElement>(
+        `mark[data-match-key="${CSS.escape(activeKey)}"]`,
+      );
+      if (node) node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, [activeKey, onContentHeightChange]);
 
   return (
     <div
