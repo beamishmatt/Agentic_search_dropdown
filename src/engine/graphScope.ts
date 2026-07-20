@@ -2,21 +2,28 @@ import { ContextGraph, GraphNode } from '../data/types';
 import { QueryAnalysis } from './queryAnalysis';
 import { labelMatches } from '../lib/objectSynonyms';
 
-export function scopeGraph(graph: ContextGraph, analysis: QueryAnalysis): GraphNode[] {
+export function scopeGraph(graph: ContextGraph, analysis: QueryAnalysis, rawQuery = ''): GraphNode[] {
   const all = Object.values(graph.nodes);
   if (all.length === 0) return [];
 
   const { entities } = analysis;
 
-  // Direct evidence ID lookup — normalize both sides and match exactly
-  const evidenceIds = entities.evidence_ids ?? [];
-  if (evidenceIds.length > 0) {
-    const normalized = evidenceIds.map(id => id.replace(/[^a-zA-Z0-9]/g, '').toUpperCase());
-    const match = all.find(n => {
+  // Evidence ID lookup — normalize both sides and match by prefix, not just
+  // exact/suffix, so a partial ID (including a bare "EV-" the user is still
+  // typing) surfaces every candidate instead of stopping at the first hit.
+  const normalized = new Set((entities.evidence_ids ?? []).map(id => id.replace(/[^a-zA-Z0-9]/g, '').toUpperCase()));
+  const rawTrimmed = rawQuery.trim();
+  // Require the "ev" to be followed by a hyphen/space (not just any word that
+  // happens to start with "ev", e.g. "event", "evening", "evidence").
+  if (/^ev[-\s]/i.test(rawTrimmed)) {
+    normalized.add(rawTrimmed.replace(/[^a-zA-Z0-9]/g, '').toUpperCase());
+  }
+  if (normalized.size > 0) {
+    const matches = all.filter(n => {
       const nid = n.id.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-      return normalized.some(q => nid === q || nid.endsWith(q) || q.endsWith(nid.replace(/^EV/, '')));
+      return [...normalized].some(q => nid === q || nid.startsWith(q) || nid.endsWith(q) || q.endsWith(nid.replace(/^EV/, '')));
     });
-    if (match) return [match];
+    if (matches.length > 0) return matches;
   }
 
   const hasEntityFilters =

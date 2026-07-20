@@ -228,34 +228,9 @@ function ResultRow({ result, query, onClick }: { result: SearchEvidenceResult; q
 }
 
 
-// ─── Case chip ────────────────────────────────────────────────────────────────
-
-function CaseChip({ label, query, onClick }: { label: string; query: string; onClick?: () => void }) {
-  const [hovered, setHovered] = React.useState(false);
-  return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        display: 'inline-flex', alignItems: 'center', gap: 6,
-        padding: '6px 12px', borderRadius: 99, border: '1px solid var(--border)',
-        backgroundColor: hovered ? 'var(--fill-hover)' : 'transparent',
-        cursor: 'pointer', fontFamily: 'inherit', transition: 'background-color 0.1s',
-      }}
-    >
-      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--foreground)' }}>
-        <HighlightText text={label} query={query} />
-      </span>
-      <ArrowUpRight size={13} style={{ color: 'var(--text-weak)', flexShrink: 0 }} />
-    </button>
-  );
-}
-
 // ─── Omni result row (people / devices / settings / capabilities) ─────────────
 
-function OmniRow({ icon, title, subtitle, query, onClick }: {
-  icon: React.ReactNode;
+function OmniRow({ title, subtitle, query, onClick }: {
   title: string;
   subtitle?: string;
   query: string;
@@ -271,9 +246,6 @@ function OmniRow({ icon, title, subtitle, query, onClick }: {
       onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'var(--fill-hover)')}
       onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
     >
-      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 6, backgroundColor: 'var(--fill-weak)', color: 'var(--text-weak)', flexShrink: 0 }}>
-        {icon}
-      </span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--foreground)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           <HighlightText text={title} query={query} />
@@ -317,6 +289,7 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
   const [selectedScopes, setSelectedScopes] = useState<Set<string>>(new Set());
   const [imageUploadOpen, setImageUploadOpen] = useState(false);
   const [uploadedImage, setUploadedImage] = useState<{ name: string; url: string } | null>(null);
+  const [activeCategoryKey, setActiveCategoryKey] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleImageFile = (file: File | undefined) => {
@@ -385,6 +358,12 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
       setOutput(null);
       setIsLoading(false);
     }
+  }, [query]);
+
+  // Re-default to the first available category whenever the query changes,
+  // rather than sticking on a tab from the previous search's result set.
+  useEffect(() => {
+    setActiveCategoryKey(null);
   }, [query]);
 
   // Debounced search
@@ -470,30 +449,93 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
   const caseEntities = output?.entities.filter(e => e.type === 'case') ?? [];
   const officerEntities = output?.entities.filter(e => e.type === 'officer') ?? [];
 
-  // Case matches — prefer named case entities, fall back to case ids from results
-  const caseMatches = caseEntities.length > 0
-    ? caseEntities.map(e => ({
+  // Case matches — prefer real case ids from matched results (accurate for
+  // prefix-style queries like "PBPD-2025" that span several cases); fall back
+  // to the LLM's named case entities only when no evidence actually matched
+  // (e.g. a descriptive reference with nothing scoped yet).
+  const caseMatches = uniqueCases.length > 0
+    ? uniqueCases.map(cid => {
+        const entity = caseEntities.find(e => e.id.toLowerCase() === cid.toLowerCase());
+        return {
+          id: cid,
+          name: entity?.name || cid,
+          subtitle: entity?.subtitle || `${output?.results.filter(r => r.case_id === cid).length ?? 0} evidence`,
+        };
+      })
+    : caseEntities.map(e => ({
         id: e.id,
         name: e.name,
         subtitle: e.subtitle || `${output?.results.filter(r => r.case_id === e.id).length ?? 0} evidence`,
-      }))
-    : uniqueCases.map(cid => ({
-        id: cid,
-        name: cid,
-        subtitle: `${output?.results.filter(r => r.case_id === cid).length ?? 0} evidence`,
       }));
+
+  // Evidence ID matches — surfaced as its own chip section (like Cases) only
+  // when the query itself looks like an evidence ID being typed (e.g. "EV-"),
+  // so partial IDs list every candidate instead of relying on Top Matches.
+  const looksLikeEvidenceIdQuery = /^ev[-\s]/i.test(q);
+  const evidenceIdMatches = looksLikeEvidenceIdQuery && output
+    ? [...new Set(output.results.map(r => r.evidence_id).filter(Boolean))].map(id => {
+        const result = output.results.find(r => r.evidence_id === id);
+        return { id, name: id, subtitle: result?.category || result?.media_class || 'Evidence' };
+      })
+    : [];
 
   // Non-evidence omni results (settings, capabilities, people, devices) — these
   // never appear in `output.results` (evidence only), so a query like "face
   // match settings" would otherwise show "No results". Not shown in image mode.
   const omniResults = (!imageUploadOpen && output?.omniResults) || [];
   const omniSections = [
-    { key: 'person',     label: 'People',       items: omniResults.filter(r => r.kind === 'person'),     icon: <User size={15} />,         fallback: '/settings/users' },
-    { key: 'device',     label: 'Devices',      items: omniResults.filter(r => r.kind === 'device'),     icon: <Smartphone size={15} />,   fallback: '/settings/devices' },
-    { key: 'setting',    label: 'Settings',     items: omniResults.filter(r => r.kind === 'setting'),    icon: <SettingsIcon size={15} />, fallback: '/settings' },
-    { key: 'capability', label: 'Capabilities', items: omniResults.filter(r => r.kind === 'capability'), icon: <Key size={15} />,          fallback: '/settings/permissions' },
+    { key: 'person',     label: 'People',       items: omniResults.filter(r => r.kind === 'person'),     fallback: '/settings/users' },
+    { key: 'device',     label: 'Devices',      items: omniResults.filter(r => r.kind === 'device'),     fallback: '/settings/devices' },
+    { key: 'setting',    label: 'Settings',     items: omniResults.filter(r => r.kind === 'setting'),    fallback: '/settings' },
+    { key: 'capability', label: 'Capabilities', items: omniResults.filter(r => r.kind === 'capability'), fallback: '/settings/permissions' },
   ].filter(s => s.items.length > 0);
   const hasOmni = omniSections.length > 0;
+
+  // Unified category browser — one tab per result kind (Evidence, Cases, plus
+  // whatever omni kinds matched), each with its own row list. Replaces the old
+  // stacked sections (case chips, evidence-id chips, top matches, omni blocks)
+  // with a single decluttered sidebar + list.
+  interface DropdownCategoryItem { id: string; title: string; subtitle?: string; onClick: () => void }
+  interface DropdownCategory { key: string; label: string; items: DropdownCategoryItem[] }
+
+  const evidenceCategoryItems: DropdownCategoryItem[] = looksLikeEvidenceIdQuery
+    ? evidenceIdMatches.map(e => ({
+        id: e.id,
+        title: e.name,
+        subtitle: e.subtitle,
+        onClick: () => { setIsOpen(false); onQueryChange(''); navigate(`/search/evidence/${e.id}`); },
+      }))
+    : filteredResults.map(r => ({
+        id: r.evidence_id,
+        title: r.evidence_id,
+        subtitle: r.title,
+        onClick: () => { setIsOpen(false); onQueryChange(''); navigate(`/search/evidence/${r.evidence_id}`); },
+      }));
+
+  const caseCategoryItems: DropdownCategoryItem[] = caseMatches.map(c => ({
+    id: c.id,
+    title: c.name,
+    subtitle: c.subtitle,
+    onClick: () => { setIsOpen(false); onQueryChange(''); navigate(`/cases/${c.id}`); },
+  }));
+
+  const dropdownCategories: DropdownCategory[] = [
+    { key: 'evidence', label: 'Evidence', items: evidenceCategoryItems },
+    { key: 'case', label: 'Cases', items: caseCategoryItems },
+    ...omniSections.map(s => ({
+      key: s.key,
+      label: s.label,
+      items: s.items.map(it => ({
+        id: it.id,
+        title: it.title,
+        subtitle: it.subtitle,
+        onClick: () => { setIsOpen(false); onQueryChange(''); navigate(it.deeplink ?? s.fallback); },
+      })),
+    })),
+  ].filter(c => c.items.length > 0);
+
+  const dropdownGrandTotal = dropdownCategories.reduce((sum, c) => sum + c.items.length, 0);
+  const activeCategory = dropdownCategories.find(c => c.key === activeCategoryKey) ?? dropdownCategories[0];
 
   const aiOverview = (!imageUploadOpen && output?.aiOverview) || '';
   const hasAiOverview = aiOverview.length > 0;
@@ -523,6 +565,7 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
           border: '1px solid var(--border)',
           borderRadius: panelOpen ? '10px 10px 8px 8px' : 10,
           boxShadow: panelOpen ? '0 6px 20px rgba(0,0,0,0.14)' : 'none',
+          overflow: 'hidden',
         }}
       >
         {/* Input row */}
@@ -679,7 +722,7 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
 
         {/* Dropdown content */}
         {((dropdownVisible && !imageUploadOpen) || showImageResults) && (
-        <div style={{ borderTop: '1px solid var(--border)', paddingBottom: 12 }}>
+        <div style={{ borderTop: '1px solid var(--border)', paddingBottom: 12, maxHeight: 480, overflowY: 'auto', overscrollBehavior: 'contain' }}>
 
           {/* ── Recent searches / Autocomplete suggestions ── */}
           {showRecents && !imageMode && (
@@ -751,7 +794,7 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
               )}
 
               {/* No results state */}
-              {!isLoading && output && topResults.length === 0 && caseMatches.length === 0 && !hasOmni && !hasAiOverview && (
+              {!isLoading && output && dropdownCategories.length === 0 && !hasAiOverview && (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '32px 14px' }}>
                   <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--foreground)' }}>
                     {imageMode ? 'No visually similar evidence found' : `No results for "${q}"`}
@@ -761,7 +804,7 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
 
               {/* AI overview — direct answer to a policy / procedure question */}
               {!isLoading && hasAiOverview && (
-                <div style={{ padding: '12px 14px', borderBottom: (caseMatches.length > 0 || topResults.length > 0 || hasOmni) ? '1px solid var(--border)' : 'none' }}>
+                <div style={{ padding: '12px 14px', borderBottom: (dropdownCategories.length > 0) ? '1px solid var(--border)' : 'none' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
                     <Sparkles size={13} style={{ color: '#E07010' }} />
                     <span style={{
@@ -769,7 +812,7 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
                       backgroundImage: 'linear-gradient(90deg, #F5C400 0%, #E07010 50%, #3A54A8 100%)',
                       WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent',
                     }}>
-                      AI overview
+                      Assistant
                     </span>
                   </div>
                   <p style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--foreground)', margin: 0, whiteSpace: 'pre-wrap' }}>{aiOverview}</p>
@@ -785,33 +828,14 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
                 </div>
               )}
 
-              {/* Case matches */}
-              {!isLoading && caseMatches.length > 0 && (
-                <>
-                  <div style={{ padding: '8px 14px 2px' }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Cases</span>
-                  </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '4px 14px 8px' }}>
-                    {caseMatches.map(c => (
-                      <CaseChip
-                        key={c.id}
-                        label={c.name}
-                        query={q}
-                        onClick={() => { setIsOpen(false); onQueryChange(''); navigate(`/cases/${c.id}`); }}
-                      />
-                    ))}
-                  </div>
-                  <div style={{ height: 1, backgroundColor: 'var(--border)', margin: '0 14px' }} />
-                </>
-              )}
-
-              {/* Top Matches */}
-              {topResults.length > 0 && (
+              {/* Visual Matches (reverse image search only — single result kind,
+                  doesn't need the category browser) */}
+              {imageMode && topResults.length > 0 && (
                 <>
                   <div style={{ padding: '8px 14px 2px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{imageMode ? 'Visual Matches' : 'Top Matches'}</span>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Visual Matches</span>
                     <button
-                      onClick={() => { setIsOpen(false); onOpenSearch(imageMode ? 'Visually similar evidence' : q, undefined, output ?? undefined); }}
+                      onClick={() => { setIsOpen(false); onOpenSearch('Visually similar evidence', undefined, output ?? undefined); }}
                       style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 500, color: '#2563eb', padding: 0 }}
                       onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
                       onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
@@ -834,37 +858,58 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
                 </>
               )}
 
-              {/* Settings, capabilities, people & devices (non-evidence matches) */}
-              {!isLoading && !imageMode && omniSections.map((section, si) => (
-                <React.Fragment key={section.key}>
-                  {(si > 0 || topResults.length > 0) && (
-                    <div style={{ height: 1, backgroundColor: 'var(--border)', margin: '4px 14px' }} />
-                  )}
-                  <div style={{ padding: '8px 14px 2px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{section.label}</span>
-                    {si === 0 && topResults.length === 0 && (
-                      <button
-                        onClick={() => { setIsOpen(false); onOpenSearch(q, undefined, output ?? undefined); }}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 500, color: '#2563eb', padding: 0 }}
-                        onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
-                        onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
-                      >
-                        See all {totalCount > 0 ? `${totalCount} ` : ''}results
-                      </button>
-                    )}
+              {/* Category browser — one tab per result kind, sharing a single
+                  scrollable list, instead of stacking every kind vertically. */}
+              {!isLoading && !imageMode && dropdownCategories.length > 0 && activeCategory && (
+                <div>
+                  <div style={{ display: 'flex' }}>
+                    <div style={{ width: 132, flexShrink: 0, borderRight: '1px solid var(--border)', padding: '6px 0' }}>
+                      {dropdownCategories.map(cat => {
+                        const isActive = cat.key === activeCategory.key;
+                        return (
+                          <button
+                            key={cat.key}
+                            onClick={() => setActiveCategoryKey(cat.key)}
+                            style={{
+                              display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%',
+                              padding: '8px 12px', border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+                              backgroundColor: isActive ? 'var(--fill-weak)' : 'transparent',
+                              color: isActive ? 'var(--foreground)' : 'var(--text-weak)',
+                            }}
+                            onMouseEnter={e => { if (!isActive) e.currentTarget.style.backgroundColor = 'var(--fill-hover)'; }}
+                            onMouseLeave={e => { if (!isActive) e.currentTarget.style.backgroundColor = 'transparent'; }}
+                          >
+                            <span style={{ fontSize: 12, fontWeight: isActive ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cat.label}</span>
+                            <span style={{ fontSize: 11, fontWeight: isActive ? 700 : 600, color: 'var(--text-weak)', flexShrink: 0, marginLeft: 8 }}>{cat.items.length}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0, maxHeight: 280, overflowY: 'auto', padding: '4px 0' }}>
+                      {activeCategory.items.slice(0, 6).map(item => (
+                        <OmniRow
+                          key={item.id}
+                          title={item.title}
+                          subtitle={item.subtitle}
+                          query={q}
+                          onClick={item.onClick}
+                        />
+                      ))}
+                    </div>
                   </div>
-                  {section.items.slice(0, 4).map(item => (
-                    <OmniRow
-                      key={item.id}
-                      icon={section.icon}
-                      title={item.title}
-                      subtitle={item.subtitle}
-                      query={q}
-                      onClick={() => { setIsOpen(false); onQueryChange(''); navigate(item.deeplink ?? section.fallback); }}
-                    />
-                  ))}
-                </React.Fragment>
-              ))}
+                  <div style={{ borderTop: '1px solid var(--border)', padding: '10px 14px' }}>
+                    <button
+                      onClick={() => { setIsOpen(false); onOpenSearch(q, undefined, output ?? undefined); }}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 500, color: '#2563eb', fontFamily: 'inherit', padding: 0 }}
+                      onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
+                      onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
+                    >
+                      See all {dropdownGrandTotal} results
+                      <ArrowRight size={13} />
+                    </button>
+                  </div>
+                </div>
+              )}
 
             </>
           )}

@@ -41,10 +41,13 @@ function terms(query: string): string[] {
   return query.toLowerCase().split(/[^a-z0-9]+/).filter(t => t.length > 1 && !STOP.has(t));
 }
 
-// True if any query term appears in the haystack.
+// True when every query term appears in the haystack (tokenized AND). Requiring
+// all terms — not just one — keeps multi-word queries from matching on a single
+// coincidental substring hit (e.g. "red shirt" shouldn't match "Redaction" just
+// because "red" is a substring of it; "shirt" has to be found too).
 function matches(haystack: string, ts: string[]): boolean {
   const h = haystack.toLowerCase();
-  return ts.some(t => h.includes(t));
+  return ts.every(t => h.includes(t));
 }
 
 // Filler words that don't change a "list this kind" intent.

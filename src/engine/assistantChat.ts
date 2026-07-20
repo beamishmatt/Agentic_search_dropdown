@@ -103,9 +103,12 @@ export async function chatWithEvidenceStream(
             : retrievalQuery;
           try {
             const results = await searchVectorStore(vectorStoreId, fileQuery, 20);
-            // Take chunks from this file; fall back to any result if file_id isn't in response
+            // Only keep chunks that actually belong to this file — the search is
+            // store-wide, not per-file, so results can include unrelated files.
+            // Falling back to "any result" would attribute other evidence's
+            // content to this item's heading in the prompt.
             const fromFile = results.filter(c => c.fileId === fileId);
-            return { fileId, item, chunks: (fromFile.length > 0 ? fromFile : results).slice(0, 5) };
+            return { fileId, item, chunks: fromFile.slice(0, 5) };
           } catch (e) {
             console.warn('[chat] searchVectorStore failed for file', fileId, e);
             return { fileId, item, chunks: [] };

@@ -579,7 +579,7 @@ function AssistantOverview({
           backgroundImage: 'linear-gradient(90deg, #F5C400 0%, #E07010 50%, #3A54A8 100%)',
           WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent',
         }}>
-          AI overview
+          Assistant
         </span>
       </div>
       {isLoading ? (
@@ -751,10 +751,10 @@ function ResultsTable({
         <colgroup>
           <col style={{ width: 36 }} />
           <col />
-          <col style={{ width: 110 }} />
-          <col style={{ width: 130 }} />
-          <col style={{ width: 150 }} />
-          <col style={{ width: 120 }} />
+          <col style={{ width: 70 }} />
+          <col style={{ width: 170 }} />
+          <col style={{ width: 170 }} />
+          <col style={{ width: 210 }} />
         </colgroup>
         <thead>
           <tr>
@@ -1133,7 +1133,7 @@ function SkeletonAIOverview() {
           backgroundImage: 'linear-gradient(90deg, #F5C400 0%, #E07010 50%, #3A54A8 100%)',
           WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent',
         }}>
-          AI overview
+          Assistant
         </span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -1218,10 +1218,10 @@ function SkeletonTable({ rows = 8 }: { rows?: number }) {
           <colgroup>
             <col style={{ width: 36 }} />
             <col />
-            <col style={{ width: 110 }} />
-            <col style={{ width: 130 }} />
-            <col style={{ width: 150 }} />
-            <col style={{ width: 120 }} />
+            <col style={{ width: 70 }} />
+            <col style={{ width: 170 }} />
+            <col style={{ width: 170 }} />
+            <col style={{ width: 210 }} />
           </colgroup>
           <thead>
             <tr>

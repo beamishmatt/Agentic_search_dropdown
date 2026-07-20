@@ -131,7 +131,7 @@ export async function agentSearch(
   // Phase 1b: Scope graph (instant — pure local)
   onProgress?.('scoping');
   console.log('[search] analysis:', JSON.stringify(analysis, null, 2));
-  const scopedNodes = hasNodes ? scopeGraph(graph, analysis) : [];
+  const scopedNodes = hasNodes ? scopeGraph(graph, analysis, query) : [];
   console.log('[search] scopedNodes count:', scopedNodes.length);
 
   // Augment metadata matches with PDF full-text matches (addresses, names, and
@@ -286,6 +286,7 @@ async function localSearch(query: string, graph: ReturnType<typeof getContextGra
   const matched = nodes.filter(n => {
     const loc = graph.cases[n.case_id]?.location;
     return (
+      n.id.toLowerCase().includes(lower) ||
       n.title.toLowerCase().includes(lower) ||
       (n.description ?? '').toLowerCase().includes(lower) ||
       n.category.toLowerCase().includes(lower) ||
