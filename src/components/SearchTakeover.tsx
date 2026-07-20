@@ -24,17 +24,21 @@ import {
   Tag,
   Users,
   Car,
-  List,
-  Map as MapIcon,
-  MapPin,
   Sparkles,
+  Settings as SettingsIcon,
+  Key,
+  Cpu,
 } from 'lucide-react';
 
 import { Badge } from './ui/badge';
+import { SyntheticMap, type SyntheticMapPoint } from './SyntheticMap';
+import { hashToUnit, resolveNodeLocation } from '../lib/geo';
 import { SCOPE_CHIPS } from './SearchDropdown';
-import { SearchFilterBar, useSearchFilters } from './SearchFilterBar';
+import { SearchFilterBar, useOmniFilters } from './SearchFilterBar';
+import { buildFacets, applyFacetFilters } from '../engine/filterRegistry';
 import { FeedbackDrawer } from './FeedbackDrawer';
 import { agentSearch, generateAndSaveDescription, SearchStep } from '../engine/agentSearch';
+import { toEvidenceResult } from '../engine/providers';
 import { ActionBar } from './ActionBar';
 import { chatWithEvidenceStream, ChatMessage as EngineChatMessage } from '../engine/assistantChat';
 import { parseDraft, DraftReport } from '../utils/draftUtils';
@@ -43,6 +47,13 @@ import { parseMetadataEdits, stripMetadataEditTags, parseActions, stripActionTag
 import {
   SearchOutput,
   SearchEvidenceResult,
+  SearchResult,
+  ResultKind,
+  CaseResult,
+  PersonResult,
+  DeviceResult,
+  SettingResult,
+  CapabilityResult,
   FilterChip,
   MediaClass,
   Case,
@@ -204,6 +215,34 @@ function CaseCard({ name }: { name: string }) {
         <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--foreground)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</p>
         <p style={{ fontSize: 11, color: '#6b7280', margin: 0 }}>Case</p>
       </div>
+    </div>
+  );
+}
+
+// ─── Omni result row (people / devices / settings / capabilities) ─────────────
+
+function OmniResultRow({ icon, title, subtitle, meta, onClick }: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle?: string;
+  meta?: string;
+  onClick?: () => void;
+}) {
+  return (
+    <div
+      onClick={onClick}
+      style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 20px', cursor: onClick ? 'pointer' : 'default' }}
+      onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'var(--fill-hover)')}
+      onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
+    >
+      <div style={{ width: 32, height: 32, borderRadius: 8, backgroundColor: 'var(--fill-weak)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: '#9ca3af' }}>
+        {icon}
+      </div>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--foreground)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</p>
+        {subtitle && <p style={{ fontSize: 12, color: 'var(--text-weak)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{subtitle}</p>}
+      </div>
+      {meta && <span style={{ fontSize: 11, color: 'var(--text-weak)', flexShrink: 0 }}>{meta}</span>}
     </div>
   );
 }
@@ -532,7 +571,7 @@ function AssistantOverview({
 }) {
   if (!isLoading && !summary) return null;
   return (
-    <div style={{ margin: '12px 20px 20px', minHeight: 140 }}>
+    <div style={{ margin: '28px 20px 20px', minHeight: 140 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
         <Sparkles size={13} style={{ color: '#E07010' }} />
         <span style={{
@@ -655,92 +694,178 @@ function ThumbnailResultCard({
   );
 }
 
-// ─── Compact row ──────────────────────────────────────────────────────────────
+// ─── Results table ──────────────────────────────────────────────────────────
 
-function CompactRow({
-  result,
-  isSelected,
+function ResultsTable({
+  results,
+  selectedId,
   query,
+  checkedIds,
   onHover,
-  onClick,
-  checked,
-  onCheck,
+  onOpen,
+  onToggle,
+  onToggleAll,
 }: {
-  result: SearchEvidenceResult;
-  isSelected: boolean;
+  results: SearchEvidenceResult[];
+  selectedId: string | null;
   query: string;
-  onHover: () => void;
-  onClick: () => void;
-  checked: boolean;
-  onCheck: (checked: boolean) => void;
+  checkedIds: Set<string>;
+  onHover: (id: string) => void;
+  onOpen: (id: string) => void;
+  onToggle: (id: string, checked: boolean) => void;
+  onToggleAll: () => void;
 }) {
-  const kind = KIND_META[result.media_class] ?? { label: result.media_class, color: '#9ca3af' };
+  const allChecked = results.length > 0 && results.every(r => checkedIds.has(r.evidence_id));
+  const someChecked = results.some(r => checkedIds.has(r.evidence_id));
+
+  const th: React.CSSProperties = {
+    textAlign: 'left',
+    fontSize: 11,
+    fontWeight: 600,
+    color: 'var(--text-weak)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.04em',
+    padding: '8px 12px',
+    whiteSpace: 'nowrap',
+    borderBottom: '1px solid var(--border)',
+  };
+  const td: React.CSSProperties = {
+    padding: '8px 12px',
+    fontSize: 12,
+    color: 'var(--text-weak)',
+    verticalAlign: 'middle',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    maxWidth: 0,
+  };
+  const checkboxCell: React.CSSProperties = {
+    padding: '8px 12px',
+    verticalAlign: 'middle',
+    textAlign: 'center',
+  };
+
   return (
-    <div
-      data-evidence-id={result.evidence_id}
-      onClick={onClick}
-      onMouseEnter={e => {
-        onHover();
-        (e.currentTarget as HTMLDivElement).style.backgroundColor = 'var(--fill-weaker)';
-      }}
-      onMouseLeave={e => {
-        (e.currentTarget as HTMLDivElement).style.backgroundColor = isSelected ? 'var(--fill-weaker)' : 'transparent';
-      }}
-      style={{
-        display: 'grid',
-        gridTemplateColumns: '32px 40px 1fr',
-        alignItems: 'center',
-        gap: 8,
-        padding: '6px 20px 6px 20px',
-        cursor: 'pointer',
-        borderLeft: `2px solid ${isSelected ? 'var(--foreground)' : 'transparent'}`,
-        backgroundColor: isSelected ? 'var(--fill-weaker)' : 'transparent',
-        transition: 'background-color 0.1s',
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <input
-          type="checkbox"
-          checked={checked}
-          onChange={e => { e.stopPropagation(); onCheck(e.target.checked); }}
-          onClick={e => e.stopPropagation()}
-          style={{ width: 13, height: 13, cursor: 'pointer', accentColor: '#111827', flexShrink: 0 }}
-        />
-      </div>
-      <div style={{ width: 40, height: 30, borderRadius: 3, overflow: 'hidden', flexShrink: 0, backgroundColor: 'var(--fill-weak)' }}>
-        {result.thumbnailUrl ? (
-          <img src={result.thumbnailUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-        ) : (
-          <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <MediaIcon mediaClass={result.media_class} size={14} />
-          </div>
-        )}
-      </div>
-      <div style={{ minWidth: 0 }}>
-        <p
-          style={{ fontSize: 13, fontWeight: 500, color: 'var(--foreground)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-          dangerouslySetInnerHTML={{ __html: highlightText(result.title, query) }}
-        />
-        <p style={{ fontSize: 11, color: 'var(--text-weak)', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {[result.evidence_id, result.case_id, result.officer].filter(Boolean).join(' · ')}
-        </p>
-      </div>
+    <div style={{ padding: '0 20px' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+        <colgroup>
+          <col style={{ width: 36 }} />
+          <col />
+          <col style={{ width: 110 }} />
+          <col style={{ width: 130 }} />
+          <col style={{ width: 150 }} />
+          <col style={{ width: 120 }} />
+        </colgroup>
+        <thead>
+          <tr>
+            <th style={{ ...th, ...checkboxCell, borderBottom: '1px solid var(--border)' }}>
+              <input
+                type="checkbox"
+                aria-label="Select all results"
+                checked={allChecked}
+                ref={el => { if (el) el.indeterminate = someChecked && !allChecked; }}
+                onChange={onToggleAll}
+                style={{ width: 13, height: 13, cursor: 'pointer', accentColor: '#111827' }}
+              />
+            </th>
+            <th style={th}>Evidence ID</th>
+            <th style={th}>Type</th>
+            <th style={th}>Case</th>
+            <th style={th}>Officer</th>
+            <th style={th}>Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {results.map(result => {
+            const isSelected = result.evidence_id === selectedId;
+            const kind = KIND_META[result.media_class] ?? { label: result.media_class, color: '#9ca3af' };
+            const checked = checkedIds.has(result.evidence_id);
+            return (
+              <tr
+                key={result.evidence_id}
+                data-evidence-id={result.evidence_id}
+                onClick={() => onOpen(result.evidence_id)}
+                onMouseEnter={e => {
+                  onHover(result.evidence_id);
+                  (e.currentTarget as HTMLTableRowElement).style.backgroundColor = 'var(--fill-weaker)';
+                }}
+                onMouseLeave={e => {
+                  (e.currentTarget as HTMLTableRowElement).style.backgroundColor = isSelected ? 'var(--fill-weaker)' : 'transparent';
+                }}
+                style={{
+                  cursor: 'pointer',
+                  backgroundColor: isSelected ? 'var(--fill-weaker)' : 'transparent',
+                  borderBottom: '1px solid var(--border)',
+                  transition: 'background-color 0.1s',
+                }}
+              >
+                <td style={checkboxCell}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={e => { e.stopPropagation(); onToggle(result.evidence_id, e.target.checked); }}
+                    onClick={e => e.stopPropagation()}
+                    style={{ width: 13, height: 13, cursor: 'pointer', accentColor: '#111827' }}
+                  />
+                </td>
+                <td style={td}>
+                  <span
+                    style={{ display: 'block', fontSize: 13, fontWeight: 500, color: 'var(--foreground)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    dangerouslySetInnerHTML={{ __html: highlightText(result.evidence_id, query) }}
+                  />
+                </td>
+                <td style={td} title={kind.label}>
+                  <MediaIcon mediaClass={result.media_class} size={16} />
+                </td>
+                <td style={td}>{result.case_id || '—'}</td>
+                <td style={td}>{result.officer || '—'}</td>
+                <td style={td}>{result.date_recorded || '—'}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
 
-// ─── Results map ──────────────────────────────────────────────────────────────
+// ─── Location-query detection ──────────────────────────────────────────────────
 
-function hashToUnit(id: string): { x: number; y: number } {
-  let h = 2166136261;
-  for (let i = 0; i < id.length; i++) {
-    h ^= id.charCodeAt(i);
-    h = Math.imul(h, 16777619);
+// A number followed by a word ("1444 Main"), or a lat/long pair.
+const ADDRESS_RE = /\b\d{1,6}\s+[a-z]/i;
+const COORD_RE = /-?\d{1,3}\.\d{3,}\s*,\s*-?\d{1,3}\.\d{3,}/;
+// Common street-type suffixes.
+const STREET_SUFFIX_RE = /\b(st|street|ave|avenue|blvd|boulevard|rd|road|dr|drive|ln|lane|way|plaza|plz|ct|court|hwy|highway|pkwy|parkway|cir|circle|terrace|trail|sq|square|intersection)\b/i;
+// Phrases that signal a spatial/location intent.
+const LOCATION_HINT_RE = /\b(near|nearby|around|location|located|where|map|address|corner of|next to|by the|blocks? of)\b/i;
+
+// Distinctive words drawn from the district's place names — a query containing
+// one (e.g. "Harbor", "Oak", "Pelican") is treated as a location query.
+function districtPlaceTokens(): Set<string> {
+  const tokens = new Set<string>();
+  const skip = new Set(['the', 'and', 'district', 'bay', 'st', 'ave', 'rd']);
+  for (const c of Object.values(getContextGraph().cases)) {
+    const loc = c.location;
+    if (!loc) continue;
+    for (const w of `${loc.label} ${loc.district ?? ''}`.toLowerCase().split(/[^a-z0-9]+/)) {
+      if (w.length > 2 && !skip.has(w)) tokens.add(w);
+    }
   }
-  const x = ((h >>> 0) & 0xffff) / 0xffff;
-  const y = ((h >>> 16) & 0xffff) / 0xffff;
-  return { x, y };
+  return tokens;
 }
+
+// True when the query looks like an address, coordinates, or a place — the only
+// case where the Map section is worth showing.
+function isLocationQuery(query: string, output: SearchOutput | null): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return false;
+  if (output?.chips?.some(c => c.type === 'location')) return true;
+  if (COORD_RE.test(q) || ADDRESS_RE.test(q) || STREET_SUFFIX_RE.test(q) || LOCATION_HINT_RE.test(q)) return true;
+  const tokens = districtPlaceTokens();
+  return q.split(/[^a-z0-9]+/).some(w => w.length > 2 && tokens.has(w));
+}
+
+// ─── Results map ──────────────────────────────────────────────────────────────
 
 function ResultsMap({
   items,
@@ -751,66 +876,25 @@ function ResultsMap({
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
-  return (
-    <div style={{ position: 'relative', width: '100%', height: '100%', backgroundColor: '#eef2f5', overflow: 'hidden' }}>
-      <svg width="100%" height="100%" style={{ position: 'absolute', inset: 0, display: 'block' }} preserveAspectRatio="none">
-        <defs>
-          <pattern id="map-grid-sm" width="32" height="32" patternUnits="userSpaceOnUse">
-            <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#d3dae3" strokeWidth="0.5" />
-          </pattern>
-          <pattern id="map-grid-lg" width="160" height="160" patternUnits="userSpaceOnUse">
-            <rect width="160" height="160" fill="url(#map-grid-sm)" />
-            <path d="M 160 0 L 0 0 0 160" fill="none" stroke="#b9c2cd" strokeWidth="1" />
-          </pattern>
-        </defs>
-        <rect width="100%" height="100%" fill="url(#map-grid-lg)" />
-        {/* A river / arterial curve and a couple of cross streets for map feel */}
-        <path d="M -20,140 C 80,90 180,200 320,150 S 520,120 640,170" stroke="#9bb7d4" strokeWidth="14" fill="none" opacity="0.55" strokeLinecap="round" />
-        <path d="M 60,0 L 60,9999" stroke="#c2cad6" strokeWidth="2" />
-        <path d="M 0,260 L 9999,260" stroke="#c2cad6" strokeWidth="2" />
-        <path d="M 280,0 L 280,9999" stroke="#c2cad6" strokeWidth="2" />
-      </svg>
-      <div style={{ position: 'absolute', top: 10, left: 12, fontSize: 11, color: '#64748b', fontFamily: "'IBM Plex Sans', sans-serif", letterSpacing: '0.05em', textTransform: 'uppercase', fontWeight: 600 }}>
-        Pelican Bay · 8th District
-      </div>
-      {items.map(r => {
-        const { x, y } = hashToUnit(r.evidence_id);
-        const isSelected = r.evidence_id === selectedId;
-        return (
-          <button
-            key={r.evidence_id}
-            onClick={() => onSelect(r.evidence_id)}
-            title={r.title}
-            style={{
-              position: 'absolute',
-              left: `${8 + x * 84}%`,
-              top: `${10 + y * 78}%`,
-              transform: 'translate(-50%, -100%)',
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              padding: 0,
-              zIndex: isSelected ? 2 : 1,
-              filter: isSelected ? 'drop-shadow(0 3px 5px rgba(0,0,0,0.35))' : 'drop-shadow(0 1px 2px rgba(0,0,0,0.2))',
-              transition: 'filter 0.1s',
-            }}
-          >
-            <MapPin
-              size={isSelected ? 30 : 22}
-              fill={isSelected ? '#fec62e' : '#dc2626'}
-              color={isSelected ? '#92400e' : '#7f1d1d'}
-              strokeWidth={1.5}
-            />
-          </button>
-        );
-      })}
-      {items.length === 0 && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <p style={{ fontSize: 13, color: '#64748b', margin: 0 }}>No results to plot.</p>
-        </div>
-      )}
-    </div>
-  );
+  // Position pins by each result's resolved incident location. Results without
+  // a location fall back to a deterministic hashed position so nothing drops
+  // off the map.
+  const points: SyntheticMapPoint[] = items.map(r => {
+    const loc = r.location;
+    const pos = loc ?? hashToUnit(r.evidence_id);
+    return {
+      id: r.evidence_id,
+      x: pos.x,
+      y: pos.y,
+      label: loc?.label ?? r.title,
+      selected: r.evidence_id === selectedId,
+    };
+  });
+
+  // Drive the district label from the results themselves.
+  const district = items.find(r => r.location?.district)?.location?.district ?? 'Pelican Bay · 8th District';
+
+  return <SyntheticMap points={points} district={district} onSelect={onSelect} />;
 }
 
 // ─── Meta field ───────────────────────────────────────────────────────────────
@@ -1022,22 +1106,158 @@ function PreviewPane({
 
 // ─── Skeleton loaders ─────────────────────────────────────────────────────────
 
-function SkeletonRow() {
+// A single pulsing placeholder bar.
+function SkelBar({ w, h = 13, r = 3, style }: { w: number | string; h?: number; r?: number; style?: React.CSSProperties }) {
+  return <div style={{ width: w, height: h, borderRadius: r, backgroundColor: 'var(--border)', ...style }} className="animate-pulse" />;
+}
+
+// Section header placeholder — matches SectionHeader (title + count).
+function SkeletonSectionHeader() {
   return (
-    <div style={{
-      display: 'grid',
-      gridTemplateColumns: '32px 40px 1fr',
-      alignItems: 'center',
-      gap: 8,
-      padding: '6px 20px',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <div style={{ width: 13, height: 13, borderRadius: 2, backgroundColor: 'var(--border)' }} className="animate-pulse" />
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, padding: '12px 20px 6px' }}>
+      <SkelBar w={64} h={12} />
+      <SkelBar w={18} h={10} />
+    </div>
+  );
+}
+
+// AI overview skeleton — matches AssistantOverview's loading state: the
+// gradient "AI overview" label, summary lines, and suggestion chips.
+function SkeletonAIOverview() {
+  return (
+    <div style={{ margin: '28px 20px 20px', minHeight: 140 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <Sparkles size={13} style={{ color: '#E07010' }} />
+        <span style={{
+          fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
+          backgroundImage: 'linear-gradient(90deg, #F5C400 0%, #E07010 50%, #3A54A8 100%)',
+          WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent',
+        }}>
+          AI overview
+        </span>
       </div>
-      <div style={{ width: 40, height: 30, borderRadius: 3, backgroundColor: 'var(--border)' }} className="animate-pulse" />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
-        <div style={{ height: 13, width: '80%', borderRadius: 3, backgroundColor: 'var(--border)' }} className="animate-pulse" />
-        <div style={{ height: 11, width: '55%', borderRadius: 3, backgroundColor: 'var(--border)' }} className="animate-pulse" />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {[92, 78, 55].map((w, i) => (
+          <SkelBar key={i} w={`${w}%`} h={12} />
+        ))}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 18 }}>
+        {[120, 96, 140].map((w, i) => (
+          <SkelBar key={i} w={w} h={26} r={99} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Cases skeleton — header + a row of pill chips (matches CaseChip).
+function SkeletonCases({ chips = [96, 120, 84, 108] }: { chips?: number[] }) {
+  return (
+    <div style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', paddingTop: 16, paddingBottom: 16 }}>
+      <SkeletonSectionHeader />
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '0 20px 8px' }}>
+        {chips.map((w, i) => (
+          <SkelBar key={i} w={w} h={31} r={99} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Attribute-matches skeleton — header + thumbnail grid (matches ThumbnailResultCard).
+function SkeletonAttributeMatches({ cards = 4 }: { cards?: number }) {
+  return (
+    <div style={{ borderBottom: '1px solid var(--border)', paddingTop: 16, paddingBottom: 16 }}>
+      <SkeletonSectionHeader />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 10, padding: '0 20px 8px' }}>
+        {Array.from({ length: cards }).map((_, i) => (
+          <div key={i} style={{ borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)', backgroundColor: 'var(--fill-weak)' }}>
+            <div style={{ width: '100%', aspectRatio: '4 / 3', backgroundColor: 'var(--border)' }} className="animate-pulse" />
+            <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+              <SkelBar w="80%" h={12} />
+              <SkelBar w="55%" h={10} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Full results skeleton — composes the section skeletons that make up a typical
+// results view: Cases, Attribute matches, then the evidence table.
+function SkeletonResults() {
+  return (
+    <>
+      <SkeletonCases />
+      <SkeletonAttributeMatches />
+      <SkeletonTable />
+    </>
+  );
+}
+
+// Mirrors ResultsTable: a "Results" section header + the same 6-column table
+// (checkbox · Evidence ID · Type · Case · Officer · Date) with placeholder rows.
+function SkeletonTable({ rows = 8 }: { rows?: number }) {
+  const th: React.CSSProperties = {
+    textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--text-weak)',
+    textTransform: 'uppercase', letterSpacing: '0.04em', padding: '8px 12px',
+    whiteSpace: 'nowrap', borderBottom: '1px solid var(--border)',
+  };
+  const cell: React.CSSProperties = { padding: '8px 12px', verticalAlign: 'middle' };
+  return (
+    <div style={{ paddingTop: 20, paddingBottom: 20 }}>
+      {/* Section header placeholder */}
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, padding: '12px 20px 6px' }}>
+        <div style={{ height: 12, width: 64, borderRadius: 3, backgroundColor: 'var(--border)' }} className="animate-pulse" />
+        <div style={{ height: 10, width: 18, borderRadius: 3, backgroundColor: 'var(--border)' }} className="animate-pulse" />
+      </div>
+      {/* Table skeleton — matches ResultsTable colgroup + columns */}
+      <div style={{ padding: '0 20px' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+          <colgroup>
+            <col style={{ width: 36 }} />
+            <col />
+            <col style={{ width: 110 }} />
+            <col style={{ width: 130 }} />
+            <col style={{ width: 150 }} />
+            <col style={{ width: 120 }} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th style={{ ...th, textAlign: 'center' }} />
+              <th style={th}>Evidence ID</th>
+              <th style={th}>Type</th>
+              <th style={th}>Case</th>
+              <th style={th}>Officer</th>
+              <th style={th}>Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Array.from({ length: rows }).map((_, r) => (
+              <tr key={r} style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={{ ...cell, textAlign: 'center' }}>
+                  <div style={{ width: 13, height: 13, borderRadius: 2, backgroundColor: 'var(--border)', margin: '0 auto' }} className="animate-pulse" />
+                </td>
+                <td style={cell}>
+                  <div style={{ height: 13, width: '78%', borderRadius: 3, backgroundColor: 'var(--border)' }} className="animate-pulse" />
+                </td>
+                <td style={cell}>
+                  <div style={{ width: 16, height: 16, borderRadius: 3, backgroundColor: 'var(--border)' }} className="animate-pulse" />
+                </td>
+                <td style={cell}>
+                  <div style={{ height: 13, width: '82%', borderRadius: 3, backgroundColor: 'var(--border)' }} className="animate-pulse" />
+                </td>
+                <td style={cell}>
+                  <div style={{ height: 13, width: '68%', borderRadius: 3, backgroundColor: 'var(--border)' }} className="animate-pulse" />
+                </td>
+                <td style={cell}>
+                  <div style={{ height: 13, width: '56%', borderRadius: 3, backgroundColor: 'var(--border)' }} className="animate-pulse" />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -1046,12 +1266,11 @@ function SkeletonRow() {
 function SkeletonPreview() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '16px 20px', gap: 16, overflowY: 'auto' }}>
-      {/* Header: kind badge + evidence ID + action buttons */}
+      {/* Header: evidence ID on the left + Download / Share / View buttons */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-        <div style={{ width: 52, height: 22, borderRadius: 99, backgroundColor: 'var(--border)' }} className="animate-pulse" />
         <div style={{ flex: 1, height: 13, borderRadius: 3, backgroundColor: 'var(--border)', maxWidth: 120 }} className="animate-pulse" />
-        <div style={{ display: 'flex', gap: 6 }}>
-          {[80, 72, 60].map((w, i) => (
+        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+          {[90, 72, 66].map((w, i) => (
             <div key={i} style={{ width: w, height: 28, borderRadius: 6, backgroundColor: 'var(--border)' }} className="animate-pulse" />
           ))}
         </div>
@@ -1107,16 +1326,16 @@ export function SearchTakeover() {
   const [attributeMatches, setAttributeMatches] = useState<AttributeMatch[]>([]);
   const [activeAttrIdx, setActiveAttrIdx] = useState(0);
   const [textIndexReady, setTextIndexReady] = useState(false);
-  const [resultsView, setResultsView] = useState<'list' | 'map'>('list');
   const resultsListRef = useRef<HTMLDivElement | null>(null);
   // Skip the selected-row auto-scroll for the first selection of a fresh result
   // set, so the AI overview at the top stays in view on load.
   const skipSelectedScrollRef = useRef(true);
   const [activeChips, setActiveChips] = useState<FilterChip[]>(initialOutput?.chips ?? []);
   const [selectedScopes, setSelectedScopes] = useState<Set<string>>(new Set());
-  const searchFilters = useSearchFilters();
+  const filters = useOmniFilters();
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [assistantOpen, setAssistantOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatStreamingId, setChatStreamingId] = useState<string | null>(null);
   const [chatSkill, setChatSkill] = useState<string | null>(null);
@@ -1307,10 +1526,14 @@ export function SearchTakeover() {
 
   // Focus on mount, close on Esc
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') navigate(-1); };
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (previewOpen) { setPreviewOpen(false); return; }
+      navigate(-1);
+    };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [navigate]);
+  }, [navigate, previewOpen]);
 
   // Auto-run search only if no pre-loaded output was provided. If the page was
   // opened with no usable query and no results, there's nothing to show here —
@@ -1338,6 +1561,7 @@ export function SearchTakeover() {
         setSearchOutput(prev => ({
           summary: prev?.summary ?? '',
           results: partialResults,
+          omniResults: partialResults.map(toEvidenceResult),
           entities: prev?.entities ?? [],
           chips: prev?.chips ?? [],
           suggestions: prev?.suggestions ?? [],
@@ -1424,28 +1648,64 @@ export function SearchTakeover() {
     });
   }, [selectedId]);
 
-  const entityPeople: string[] = (() => {
-    if (!searchOutput) return [];
-    const unique = [...new Set(searchOutput.results.map(r => r.officer).filter(Boolean))];
-    return unique.length > 0 ? unique : searchOutput.entities.filter(e => e.type === 'officer').map(e => e.name);
-  })();
+  // ── Omni results & type-aware filtering ──────────────────────────────────────
+  // A location/address query is about places, not configuration — drop settings
+  // and capabilities from the result set so they don't clutter the answer.
+  const isLocationSearch = isLocationQuery(committedQuery, searchOutput);
+  const omniResults: SearchResult[] = React.useMemo(() => {
+    const raw = searchOutput?.omniResults ?? [];
+    return isLocationSearch ? raw.filter(r => r.kind !== 'setting' && r.kind !== 'capability') : raw;
+  }, [searchOutput, isLocationSearch]);
 
-  const entityCases: { id: string; category?: string }[] = (() => {
-    if (!searchOutput) return [];
-    const seen = new Map<string, string | undefined>();
-    searchOutput.results.forEach(r => { if (r.case_id && !seen.has(r.case_id)) seen.set(r.case_id, r.category); });
-    if (seen.size > 0) return [...seen.entries()].map(([id, category]) => ({ id, category }));
-    return searchOutput.entities.filter(e => e.type === 'case').map(e => ({ id: e.name }));
-  })();
+  // The facet bar reflects the dominant result type (whichever kind has the most
+  // results — usually evidence). Facet options are derived from the live result
+  // set; selecting a facet narrows only that kind, leaving other sections intact.
+  const primaryKind: ResultKind = React.useMemo(() => {
+    const counts = new Map<ResultKind, number>();
+    for (const r of omniResults) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1);
+    let best: ResultKind = 'evidence';
+    let bestN = -1;
+    for (const [k, n] of counts) if (n > bestN) { best = k; bestN = n; }
+    return best;
+  }, [omniResults]);
 
-  const activeScopes = SCOPE_CHIPS.filter(s => selectedScopes.has(s.id));
+  // For an admin/settings result set (no evidence, no cases) the facet bar spans
+  // all present admin kinds so settings + capabilities filter together (e.g. a
+  // shared "Section" facet mirroring the admin nav). Otherwise it follows the
+  // single dominant kind.
+  const isAdminResultSet = omniResults.length > 0 && omniResults.every(r => r.kind !== 'evidence' && r.kind !== 'case');
+  const facetKinds: ResultKind[] = isAdminResultSet
+    ? [...new Set(omniResults.map(r => r.kind))]
+    : [primaryKind];
 
+  const facets = buildFacets(omniResults, facetKinds);
+  const filteredOmni = applyFacetFilters(omniResults, facetKinds, filters.selections);
+
+  // Reset facet selections when the facet set changes — facet keys can collide
+  // across kinds (e.g. 'status' on both cases and people).
+  React.useEffect(() => { filters.clearAll(); }, [facetKinds.join(',')]);
+
+  // Per-kind slices of the filtered result set.
+  const personItems     = filteredOmni.filter((r): r is PersonResult     => r.kind === 'person');
+  const deviceItems     = filteredOmni.filter((r): r is DeviceResult     => r.kind === 'device');
+  const settingItems    = filteredOmni.filter((r): r is SettingResult    => r.kind === 'setting');
+  const capabilityItems = filteredOmni.filter((r): r is CapabilityResult => r.kind === 'capability');
+  const caseResults     = filteredOmni.filter((r): r is CaseResult       => r.kind === 'case');
+
+  // Evidence items feed the existing rich evidence pipeline (grouping, preview,
+  // PDF/attribute match navigators).
+  const evidenceItems: SearchEvidenceResult[] = filteredOmni
+    .filter((r): r is Extract<SearchResult, { kind: 'evidence' }> => r.kind === 'evidence')
+    .map(r => r.evidence);
+
+  // Cases shown = case-provider matches plus cases that own matching evidence,
+  // deduped by id. Backed by mockCases where available, stubbed otherwise so
+  // nothing is silently dropped.
   const matchedCases: Case[] = React.useMemo(() => {
-    const caseIds = [...new Set(entityCases.map(e => e.id))];
-    // Include every distinct case from the results. If a case isn't in the
-    // mockCases catalog, synthesize a minimal stub so it still counts and
-    // renders rather than being silently dropped.
-    return caseIds.map(id => mockCases.find(c => c.caseId === id) ?? {
+    const caseIds = new Set<string>();
+    caseResults.forEach(c => caseIds.add(c.id));
+    evidenceItems.forEach(e => { if (e.case_id) caseIds.add(e.case_id); });
+    return [...caseIds].map(id => mockCases.find(c => c.caseId === id) ?? {
       caseId: id,
       owner: '',
       createdOn: new Date(),
@@ -1454,11 +1714,7 @@ export function SearchTakeover() {
       description: '',
       accessClass: 'Unrestricted' as const,
     });
-  }, [entityCases]);
-
-  const evidenceItems = searchOutput
-    ? searchFilters.filterResults(searchOutput.results)
-    : [];
+  }, [caseResults, evidenceItems]);
 
   // Group results the way Google groups a SERP: cases, then attribute
   // (visual) matches, then everything else — with exact text matches ranked
@@ -1487,6 +1743,7 @@ export function SearchTakeover() {
         thumbnailUrl: node.thumbnailUrl,
         fileUrl: node.fileUrl,
         date_recorded: node.date_recorded,
+        location: resolveNodeLocation(graph, node.case_id, node.id),
       });
     };
 
@@ -1538,6 +1795,12 @@ export function SearchTakeover() {
     ? allEvidenceItems.filter(r => checkedIds.has(r.evidence_id))
     : allEvidenceItems
   ).map(resolveChatNode);
+
+  // Evidence that resolved a real incident location — plotted in the Map
+  // section, but only when the query itself is location-oriented (an address,
+  // coordinates, or a place name).
+  const locatedItems = allEvidenceItems.filter(r => !!r.location);
+  const showMap = locatedItems.length > 0 && isLocationSearch;
 
   // ── AI overview: summarize the actual displayed results corpus ──────────────
   // Stable signature of what's shown so we only re-summarize when the set changes.
@@ -1641,10 +1904,14 @@ export function SearchTakeover() {
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <div style={{ width: '100%', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
 
-          {/* Filter bar — shown when results are present */}
-          {hasResults && (
-            <div style={{ paddingTop: 16, paddingBottom: 8, paddingLeft: 24, flexShrink: 0, borderBottom: '1px solid var(--border)' }}>
-              <SearchFilterBar filters={searchFilters} />
+          {/* Type-aware filter bar — facets for the dominant result type, derived
+              from the live result set. Centered and capped to the results-list
+              width so they align. */}
+          {hasResults && facets.length > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 16, paddingBottom: 8, flexShrink: 0, borderBottom: '1px solid var(--border)' }}>
+              <div style={{ width: '100%', maxWidth: 860, minWidth: 0, padding: '0 20px' }}>
+                <SearchFilterBar facets={facets} filters={filters} />
+              </div>
             </div>
           )}
 
@@ -1701,81 +1968,28 @@ export function SearchTakeover() {
               })()}
             </div>
           ) : (
-            /* Results state — V4 3-column layout */
-            <div style={{ flex: 1, overflow: 'hidden', display: 'flex', minHeight: 0 }}>
+            /* Results state — centered results list; preview opens in a drawer */
+            <div style={{ flex: 1, overflow: 'hidden', display: 'flex', minHeight: 0, justifyContent: 'center' }}>
 
-              {/* Results list — fluid, 420–580px */}
-              <div style={{ flex: '1.9 1 65%', minWidth: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--border)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-                  {isLoading && allEvidenceItems.length === 0 ? (
-                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                      Searching…
-                    </span>
-                  ) : allEvidenceItems.length === 0 ? (
-                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                      No results
-                    </span>
-                  ) : (
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-                      <input
-                        type="checkbox"
-                        checked={allEvidenceItems.every(r => checkedIds.has(r.evidence_id))}
-                        ref={el => {
-                          if (el) el.indeterminate = checkedIds.size > 0 && !allEvidenceItems.every(r => checkedIds.has(r.evidence_id));
-                        }}
-                        onChange={() => {
-                          const allSelected = allEvidenceItems.every(r => checkedIds.has(r.evidence_id));
-                          setCheckedIds(allSelected ? new Set() : new Set(allEvidenceItems.map(r => r.evidence_id)));
-                        }}
-                        style={{ width: 13, height: 13, cursor: 'pointer', accentColor: '#111827' }}
-                      />
-                      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-weak)' }}>
-                        Select all {allEvidenceItems.length} {allEvidenceItems.length === 1 ? 'result' : 'results'}
-                      </span>
-                    </label>
-                  )}
-                  {allEvidenceItems.length > 0 && (
-                    <div style={{ display: 'flex', alignItems: 'center' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', borderRadius: 6, border: '1px solid var(--border)', overflow: 'hidden' }}>
-                        {(['list', 'map'] as const).map(view => {
-                          const Icon = view === 'list' ? List : MapIcon;
-                          const active = resultsView === view;
-                          return (
-                            <button
-                              key={view}
-                              onClick={() => setResultsView(view)}
-                              title={view === 'list' ? 'List view' : 'Map view'}
-                              style={{
-                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                width: 26, height: 22, border: 'none', cursor: 'pointer', padding: 0,
-                                backgroundColor: active ? 'var(--foreground)' : 'transparent',
-                                color: active ? '#ffffff' : 'var(--text-weak)',
-                                transition: 'background-color 0.1s, color 0.1s',
-                              }}
-                            >
-                              <Icon size={13} />
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-                {resultsView === 'list' ? (
-                  <div ref={resultsListRef} style={{ flex: 1, overflowY: 'auto', scrollbarWidth: 'none' }} className="[&::-webkit-scrollbar]:hidden">
-                    {committedQuery.trim() && (
-                      <AssistantOverview
-                        summary={corpusSummary || (searchOutput?.summary ?? '')}
-                        suggestions={searchOutput?.suggestions ?? []}
-                        isLoading={corpusSummaryLoading || (isLoading && !corpusSummary && !searchOutput?.summary)}
-                        onSuggestionClick={(s) => { setAssistantOpen(true); handleChatSend(s); }}
-                        onOpenAssistant={() => setAssistantOpen(true)}
-                      />
-                    )}
+              {/* Results list — centered, capped width */}
+              <div style={{ width: '100%', maxWidth: 860, minWidth: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+                <div ref={resultsListRef} style={{ flex: 1, overflowY: 'auto', scrollbarWidth: 'none' }} className="[&::-webkit-scrollbar]:hidden">
                     {isLoading && allEvidenceItems.length === 0 ? (
-                      Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)
+                      <>
+                        <SkeletonAIOverview />
+                        <SkeletonResults />
+                      </>
                     ) : (
                       <>
+                        {committedQuery.trim() && (
+                          <AssistantOverview
+                            summary={corpusSummary || (searchOutput?.summary ?? '')}
+                            suggestions={searchOutput?.suggestions ?? []}
+                            isLoading={corpusSummaryLoading || (isLoading && !corpusSummary && !searchOutput?.summary)}
+                            onSuggestionClick={(s) => { setAssistantOpen(true); handleChatSend(s); }}
+                            onOpenAssistant={() => setAssistantOpen(true)}
+                          />
+                        )}
                         {/* Cases */}
                         {matchedCases.length > 0 && (
                           <div style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', paddingTop: 16, paddingBottom: 16 }}>
@@ -1797,6 +2011,22 @@ export function SearchTakeover() {
                               {matchedCases.map(c => (
                                 <CaseChip key={c.caseId} c={c} query={query} onClick={() => handleViewCase(c.caseId)} />
                               ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Map — located evidence plotted on the district map */}
+                        {showMap && (
+                          <div style={{ borderTop: matchedCases.length > 0 ? undefined : '1px solid var(--border)', borderBottom: '1px solid var(--border)', paddingTop: 16, paddingBottom: 16 }}>
+                            <SectionHeader title="Map" count={locatedItems.length} />
+                            <div style={{ padding: '0 20px 8px' }}>
+                              <div style={{ height: 460, borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)' }}>
+                                <ResultsMap
+                                  items={locatedItems}
+                                  selectedId={selectedId}
+                                  onSelect={(id) => { setSelectedId(id); setPreviewOpen(true); }}
+                                />
+                              </div>
                             </div>
                           </div>
                         )}
@@ -1829,7 +2059,7 @@ export function SearchTakeover() {
                                     result={result}
                                     isSelected={result.evidence_id === selectedId}
                                     onHover={() => setSelectedId(result.evidence_id)}
-                                    onClick={() => setSelectedId(result.evidence_id)}
+                                    onClick={() => { setSelectedId(result.evidence_id); setPreviewOpen(true); }}
                                     checked={checkedIds.has(result.evidence_id)}
                                     onCheck={c => {
                                       setCheckedIds(prev => {
@@ -1851,63 +2081,152 @@ export function SearchTakeover() {
                           const hasGroupsAbove = matchedCases.length > 0 || attributeGroupItems.length > 0;
                           return (
                             <div style={{ paddingTop: 20, paddingBottom: 20 }}>
-                              {hasGroupsAbove && <SectionHeader title="More results" count={otherGroupItems.length} />}
-                              {otherGroupItems.map(result => (
-                                <CompactRow
-                                  key={result.evidence_id}
-                                  result={result}
-                                  isSelected={result.evidence_id === selectedId}
-                                  query={query}
-                                  onHover={() => setSelectedId(result.evidence_id)}
-                                  onClick={() => setSelectedId(result.evidence_id)}
-                                  checked={checkedIds.has(result.evidence_id)}
-                                  onCheck={c => {
-                                    setCheckedIds(prev => {
-                                      const next = new Set(prev);
-                                      c ? next.add(result.evidence_id) : next.delete(result.evidence_id);
-                                      return next;
-                                    });
-                                  }}
+                              <SectionHeader
+                                title={hasGroupsAbove ? 'More results' : 'Results'}
+                                count={otherGroupItems.length}
+                                action={(
+                                  <button
+                                    onClick={() => navigate('/evidence')}
+                                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 600, color: '#60a5fa' }}
+                                    onMouseEnter={e => (e.currentTarget.style.color = '#3b82f6')}
+                                    onMouseLeave={e => (e.currentTarget.style.color = '#60a5fa')}
+                                  >
+                                    See all
+                                  </button>
+                                )}
+                              />
+                              <ResultsTable
+                                results={otherGroupItems}
+                                selectedId={selectedId}
+                                query={query}
+                                checkedIds={checkedIds}
+                                onHover={id => setSelectedId(id)}
+                                onOpen={id => { setSelectedId(id); setPreviewOpen(true); }}
+                                onToggle={(id, checked) => {
+                                  setCheckedIds(prev => {
+                                    const next = new Set(prev);
+                                    checked ? next.add(id) : next.delete(id);
+                                    return next;
+                                  });
+                                }}
+                                onToggleAll={() => {
+                                  const allSelected = otherGroupItems.every(r => checkedIds.has(r.evidence_id));
+                                  setCheckedIds(prev => {
+                                    const next = new Set(prev);
+                                    if (allSelected) {
+                                      otherGroupItems.forEach(r => next.delete(r.evidence_id));
+                                    } else {
+                                      otherGroupItems.forEach(r => next.add(r.evidence_id));
+                                    }
+                                    return next;
+                                  });
+                                }}
+                              />
+                            </div>
+                          );
+                        })()}
+
+                        {/* People */}
+                        {personItems.length > 0 && (() => {
+                          const capped = !expandedSections.person;
+                          const visible = capped ? personItems.slice(0, ROW_CAP) : personItems;
+                          const remaining = personItems.length - visible.length;
+                          return (
+                            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16, paddingBottom: 8 }}>
+                              <SectionHeader title="People" count={personItems.length} />
+                              {visible.map(p => (
+                                <OmniResultRow
+                                  key={p.id}
+                                  icon={<User size={16} />}
+                                  title={p.title}
+                                  subtitle={p.subtitle}
+                                  meta={p.status}
+                                  onClick={() => navigate(p.deeplink ?? '/settings/users')}
                                 />
                               ))}
+                              {remaining > 0 && <ShowMoreButton remaining={remaining} onClick={() => toggleSection('person')} />}
+                            </div>
+                          );
+                        })()}
+
+                        {/* Devices */}
+                        {deviceItems.length > 0 && (() => {
+                          const capped = !expandedSections.device;
+                          const visible = capped ? deviceItems.slice(0, ROW_CAP) : deviceItems;
+                          const remaining = deviceItems.length - visible.length;
+                          return (
+                            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16, paddingBottom: 8 }}>
+                              <SectionHeader title="Devices" count={deviceItems.length} />
+                              {visible.map(d => (
+                                <OmniResultRow
+                                  key={d.id}
+                                  icon={<Cpu size={16} />}
+                                  title={d.title}
+                                  subtitle={d.subtitle}
+                                  meta={d.status}
+                                  onClick={() => navigate(d.deeplink ?? '/settings/devices')}
+                                />
+                              ))}
+                              {remaining > 0 && <ShowMoreButton remaining={remaining} onClick={() => toggleSection('device')} />}
+                            </div>
+                          );
+                        })()}
+
+                        {/* Settings */}
+                        {settingItems.length > 0 && (() => {
+                          const capped = !expandedSections.setting;
+                          const visible = capped ? settingItems.slice(0, ROW_CAP) : settingItems;
+                          const remaining = settingItems.length - visible.length;
+                          return (
+                            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16, paddingBottom: 8 }}>
+                              <SectionHeader title="Settings" count={settingItems.length} />
+                              {visible.map(s => (
+                                <OmniResultRow
+                                  key={s.id}
+                                  icon={<SettingsIcon size={16} />}
+                                  title={s.title}
+                                  subtitle={s.description}
+                                  meta={s.area}
+                                  onClick={() => navigate(s.deeplink ?? '/settings')}
+                                />
+                              ))}
+                              {remaining > 0 && <ShowMoreButton remaining={remaining} onClick={() => toggleSection('setting')} />}
+                            </div>
+                          );
+                        })()}
+
+                        {/* Capabilities / permissions */}
+                        {capabilityItems.length > 0 && (() => {
+                          const capped = !expandedSections.capability;
+                          const visible = capped ? capabilityItems.slice(0, ROW_CAP) : capabilityItems;
+                          const remaining = capabilityItems.length - visible.length;
+                          return (
+                            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16, paddingBottom: 8 }}>
+                              <SectionHeader title="Capabilities" count={capabilityItems.length} />
+                              {visible.map(c => (
+                                <OmniResultRow
+                                  key={c.id}
+                                  icon={<Key size={16} />}
+                                  title={c.title}
+                                  subtitle={c.description}
+                                  meta={`${c.roles.length} role${c.roles.length === 1 ? '' : 's'} · ${c.enabled ? 'Enabled' : 'Disabled'}`}
+                                  onClick={() => navigate(c.deeplink ?? '/settings/permissions')}
+                                />
+                              ))}
+                              {remaining > 0 && <ShowMoreButton remaining={remaining} onClick={() => toggleSection('capability')} />}
                             </div>
                           );
                         })()}
                       </>
                     )}
-                    {allEvidenceItems.length === 0 && matchedCases.length === 0 && !isLoading && (
+                    {allEvidenceItems.length === 0 && matchedCases.length === 0 &&
+                      personItems.length === 0 && deviceItems.length === 0 &&
+                      settingItems.length === 0 && capabilityItems.length === 0 && !isLoading && (
                       <div style={{ padding: '40px 16px', textAlign: 'center' }}>
                         <p style={{ fontSize: 13, color: 'var(--text-weak)', margin: 0 }}>No results match the selected filters.</p>
                       </div>
                     )}
                   </div>
-                ) : (
-                  <div style={{ flex: 1, minHeight: 0 }}>
-                    <ResultsMap
-                      items={allEvidenceItems}
-                      selectedId={selectedId}
-                      onSelect={setSelectedId}
-                    />
-                  </div>
-                )}
-              </div>
-
-              {/* Preview pane — fully fluid, fills remaining width */}
-              <div style={{ flex: '1 1 35%', minWidth: 0, overflow: 'hidden' }}>
-                {isLoading && !selectedEvidence ? (
-                  <SkeletonPreview />
-                ) : selectedEvidence ? (
-                  <PreviewPane
-                    result={selectedEvidence}
-                    onViewEvidence={() => handleViewEvidence(selectedEvidence.evidence_id)}
-                    searchQuery={committedQuery}
-                    scrollToMatch={activeMatch && activeMatch.evidenceId === selectedEvidence.evidence_id ? activeMatch : undefined}
-                  />
-                ) : (
-                  <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <p style={{ fontSize: 13, color: 'var(--text-weak)', margin: 0 }}>Select a result to preview</p>
-                  </div>
-                )}
               </div>
 
             </div>
@@ -1954,6 +2273,51 @@ export function SearchTakeover() {
           onMetadataEditDismiss={handleMetadataEditDismiss}
         />
         <DraftDrawer draft={openDraft} open={!!openDraft} onClose={() => setOpenDraft(null)} />
+
+        {/* Preview drawer — above the top rail / utility bar (zIndex 300) */}
+        {previewOpen && (
+          <div
+            onClick={() => setPreviewOpen(false)}
+            style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.3)', zIndex: 400 }}
+          />
+        )}
+        <div
+          style={{
+            position: 'fixed', top: 0, right: 0, bottom: 0, width: 460, maxWidth: '90vw',
+            backgroundColor: 'var(--base)', borderLeft: '1px solid var(--border)', zIndex: 401,
+            display: 'flex', flexDirection: 'column',
+            transform: previewOpen ? 'translateX(0)' : 'translateX(100%)',
+            transition: 'transform 300ms cubic-bezier(0, 0.74, 0, 1)',
+            boxShadow: '-4px 0 24px rgba(0,0,0,0.1)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+            <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: 'var(--foreground)' }}>Preview</span>
+            <button
+              onClick={() => setPreviewOpen(false)}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 6, border: 'none', backgroundColor: 'transparent', color: 'var(--muted-foreground)', cursor: 'pointer' }}
+              aria-label="Close preview"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+            {isLoading && !selectedEvidence ? (
+              <SkeletonPreview />
+            ) : selectedEvidence ? (
+              <PreviewPane
+                result={selectedEvidence}
+                onViewEvidence={() => handleViewEvidence(selectedEvidence.evidence_id)}
+                searchQuery={committedQuery}
+                scrollToMatch={activeMatch && activeMatch.evidenceId === selectedEvidence.evidence_id ? activeMatch : undefined}
+              />
+            ) : (
+              <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <p style={{ fontSize: 13, color: 'var(--text-weak)', margin: 0 }}>Select a result to preview</p>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

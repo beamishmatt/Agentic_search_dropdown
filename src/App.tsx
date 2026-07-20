@@ -55,6 +55,7 @@ function TopRailSearch({
   resultCount,
   onReopenSearch,
   onClearResults,
+  onAiMode,
 }: {
   onOpenSearch: (query: string, selectedId?: string, output?: import('./data/types').SearchOutput) => void;
   searchInputRef?: React.RefObject<HTMLInputElement>;
@@ -63,6 +64,7 @@ function TopRailSearch({
   resultCount: number;
   onReopenSearch: () => void;
   onClearResults: () => void;
+  onAiMode: () => void;
 }) {
   const localRef = React.useRef<HTMLInputElement>(null);
   return (
@@ -75,6 +77,7 @@ function TopRailSearch({
       resultCount={resultCount}
       onResultTagClick={onReopenSearch}
       onClearResults={onClearResults}
+      onAiMode={onAiMode}
     />
   );
 }
@@ -335,6 +338,7 @@ function AppContent() {
                   resultCount={0}
                   onReopenSearch={() => navigate('/search', { state: { query: topRailQuery } })}
                   onClearResults={() => setTopRailQuery('')}
+                  onAiMode={() => setAssistantOpen(true)}
                 />
               </div>
               <div className="ml-auto">
@@ -343,8 +347,10 @@ function AppContent() {
             </div>
           )}
 
-          {/* Fixed Utility Bar - hidden on home page */}
-          {location.pathname !== '/home' && (
+          {/* Fixed Utility Bar - hidden on home page; on desktop search the
+              title moves into the filter chip row, so the bar is hidden there
+              (kept on mobile search for the sidebar toggle) */}
+          {location.pathname !== '/home' && !(location.pathname === '/search' && !isMobile) && (
           <div className="shrink-0">
             <UtilityBar
               title={pageTitle}

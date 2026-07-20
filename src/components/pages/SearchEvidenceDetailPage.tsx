@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { getContextGraph } from '../../storage/config';
 import { GraphNode } from '../../data/types';
 import { PdfViewer } from '../PdfViewer';
+import { SyntheticMap } from '../SyntheticMap';
 import {
   ChevronDown,
   User,
@@ -184,6 +185,7 @@ export function SearchEvidenceDetailPage() {
 
   const graph = getContextGraph();
   const node: GraphNode | undefined = evidenceId ? graph.nodes[evidenceId] : undefined;
+  const location = node ? graph.cases[node.case_id]?.location : undefined;
 
   const formattedDate = node?.date_recorded
     ? new Date(node.date_recorded).toLocaleString('en-US', {
@@ -433,7 +435,7 @@ export function SearchEvidenceDetailPage() {
               <MetaRow
                 icon={<MapPin size={14} />}
                 label="Location"
-                value={node.scene_type || 'No location added'}
+                value={location?.label || node.scene_type || 'No location added'}
                 action={
                   <button
                     style={{
@@ -453,6 +455,16 @@ export function SearchEvidenceDetailPage() {
                   </button>
                 }
               />
+
+              {/* Location map — a single pin at this evidence's incident place */}
+              {location && (
+                <div style={{ height: 180, borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)', marginTop: 4 }}>
+                  <SyntheticMap
+                    points={[{ id: node.id, x: location.x, y: location.y, label: location.label, selected: true }]}
+                    district={location.district}
+                  />
+                </div>
+              )}
             </div>
           )}
 

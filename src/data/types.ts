@@ -94,12 +94,24 @@ export interface GraphEdge {
   metadata?: Record<string, unknown>;
 }
 
+// A normalized point on the fictional district map. x/y are 0–1 fractions of
+// the stylized map surface (not real lat/lng); positions are meaningful and
+// clustered by incident rather than hashed pseudo-randomly.
+export interface GeoPoint {
+  label: string;
+  x: number;
+  y: number;
+  district?: string;
+}
+
 export interface CaseGraphMetadata {
   title: string;
   status: string;
   lead_officer: string;
   evidence_ids: string[];
   date_opened: string;
+  // One incident location per case; nodes inherit it (with small jitter).
+  location?: GeoPoint;
 }
 
 export interface ContextGraph {
@@ -148,11 +160,96 @@ export interface SearchEvidenceResult {
   related_evidence?: string[];
   date_recorded?: string;
   source?: string;
+  location?: GeoPoint;
 }
+
+// ─── Omni search: cross-entity result union ──────────────────────────────────
+// Search returns more than evidence. Every result kind shares a common envelope
+// (kind/id/title/subtitle/relevance/deeplink) and carries its own typed payload.
+
+export type ResultKind = 'evidence' | 'case' | 'person' | 'device' | 'setting' | 'capability';
+
+export interface BaseResult {
+  kind: ResultKind;
+  id: string;
+  title: string;
+  subtitle?: string;   // e.g. case status, person unit, setting area
+  relevance: string;
+  deeplink?: string;   // route clicking the result navigates to
+}
+
+export interface EvidenceResult extends BaseResult {
+  kind: 'evidence';
+  evidence: SearchEvidenceResult;
+}
+
+export interface CaseResult extends BaseResult {
+  kind: 'case';
+  status: string;
+  owner: string;
+  accessClass: string;
+  leadOfficer: string;
+  dateOpened: string;
+  lastUpdated?: string;
+  category?: string;
+  evidenceCount: number;
+}
+
+export interface PersonResult extends BaseResult {
+  kind: 'person';
+  role: string;
+  unit?: string;
+  status: string;
+  email?: string;
+}
+
+export interface DeviceResult extends BaseResult {
+  kind: 'device';
+  deviceType: string;
+  assignedTo?: string;
+  status: string;
+  lastSeen?: string;
+}
+
+// Top-level admin nav groups, mirroring the Evidence.com admin settings nav.
+export type AdminSection =
+  | 'User Management'
+  | 'Device Management'
+  | 'Organization Settings'
+  | 'Evidence Settings'
+  | 'Application Settings';
+
+export interface SettingResult extends BaseResult {
+  kind: 'setting';
+  section: AdminSection;   // admin nav group
+  subsection: string;      // e.g. Roles & Permissions, Retention, Security
+  description: string;
+}
+
+export interface CapabilityResult extends BaseResult {
+  kind: 'capability';
+  section: AdminSection;   // admin nav group the permission lives under
+  roles: string[];
+  enabled: boolean;
+  description: string;
+}
+
+export type SearchResult =
+  | EvidenceResult
+  | CaseResult
+  | PersonResult
+  | DeviceResult
+  | SettingResult
+  | CapabilityResult;
 
 export interface SearchOutput {
   summary: string;
+  // A direct, AI-generated answer to a natural-language policy/procedure
+  // question (e.g. "what is our policy for arresting someone with diplomatic
+  // immunity"). Present only when the query is a question rather than a lookup.
+  aiOverview?: string;
   results: SearchEvidenceResult[];
+  omniResults: SearchResult[];
   entities: EntityResult[];
   chips: FilterChip[];
   suggestions: string[];

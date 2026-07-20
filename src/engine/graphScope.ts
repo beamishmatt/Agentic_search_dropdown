@@ -1,5 +1,6 @@
 import { ContextGraph, GraphNode } from '../data/types';
 import { QueryAnalysis } from './queryAnalysis';
+import { labelMatches } from '../lib/objectSynonyms';
 
 export function scopeGraph(graph: ContextGraph, analysis: QueryAnalysis): GraphNode[] {
   const all = Object.values(graph.nodes);
@@ -24,6 +25,7 @@ export function scopeGraph(graph: ContextGraph, analysis: QueryAnalysis): GraphN
     entities.case_ids.length > 0 ||
     entities.categories.length > 0 ||
     entities.objects.length > 0 ||
+    entities.locations.length > 0 ||
     entities.dates.start ||
     entities.dates.end;
 
@@ -33,7 +35,7 @@ export function scopeGraph(graph: ContextGraph, analysis: QueryAnalysis): GraphN
   if (!hasEntityFilters) {
     const terms = queryTerms(analysis);
     if (terms.length === 0) return [];
-    return scoredSort(fuzzyMatch(all, terms), analysis, terms, new Set());
+    return scoredSort(graph, fuzzyMatch(all, terms), analysis, terms, new Set());
   }
 
   let candidates = [...all];
@@ -80,15 +82,21 @@ export function scopeGraph(graph: ContextGraph, analysis: QueryAnalysis): GraphN
     );
   }
 
-  // Detected objects — partial match
+  // Location — a node matches when any searched location term is a substring of
+  // its resolved incident location (case place label / district) or scene type.
+  if (entities.locations.length > 0) {
+    candidates = candidates.filter(n =>
+      entities.locations.some(loc => nodeLocationText(graph, n).includes(loc.toLowerCase()))
+    );
+  }
+
+  // Detected objects — synonym-aware match. Users search generic terms
+  // ("car", "gun") while the vision model tags specific ones ("sedan",
+  // "handgun"), so match through a hypernym map. Color may live on the
+  // detected object or only in the free-text description, so accept either.
   if (entities.objects.length > 0) {
     const objectMatches = candidates.filter(n =>
-      entities.objects.some(searchObj =>
-        (n.objects_detected ?? []).some(det =>
-          det.label.toLowerCase().includes(searchObj.label.toLowerCase()) &&
-          (!searchObj.color || det.color?.toLowerCase() === searchObj.color.toLowerCase())
-        )
-      )
+      entities.objects.some(searchObj => nodeMatchesObject(n, searchObj))
     );
     candidates = objectMatches;
   }
@@ -99,7 +107,7 @@ export function scopeGraph(graph: ContextGraph, analysis: QueryAnalysis): GraphN
     if (terms.length === 0) return [];
     const fallback = fuzzyMatch(all, terms);
     if (fallback.length === 0) return [];
-    return scoredSort(fallback, analysis, terms, new Set());
+    return scoredSort(graph, fallback, analysis, terms, new Set());
   }
 
   // Track direct candidates before edge expansion — used for scoring
@@ -114,12 +122,12 @@ export function scopeGraph(graph: ContextGraph, analysis: QueryAnalysis): GraphN
   }
 
   const scoped = all.filter(n => candidateIds.has(n.id));
-  return scoredSort(scoped, analysis, terms, directIds);
+  return scoredSort(graph, scoped, analysis, terms, directIds);
 }
 
 // ─── Scoring ─────────────────────────────────────────────────────────────────
 
-function scoreNode(n: GraphNode, analysis: QueryAnalysis, terms: string[], directIds: Set<string>): number {
+function scoreNode(graph: ContextGraph, n: GraphNode, analysis: QueryAnalysis, terms: string[], directIds: Set<string>): number {
   let score = 0;
   const { entities } = analysis;
 
@@ -155,12 +163,20 @@ function scoreNode(n: GraphNode, analysis: QueryAnalysis, terms: string[], direc
     if (n.media_class.includes(type.toLowerCase())) score += 6;
   }
 
-  // Object detection matches
+  // Location matches (case place label / district / scene type)
+  const locText = nodeLocationText(graph, n);
+  for (const loc of entities.locations) {
+    if (locText.includes(loc.toLowerCase())) score += 8;
+  }
+
+  // Object detection matches (synonym-aware)
+  const descForColor = descLower;
   for (const searchObj of entities.objects) {
     for (const det of (n.objects_detected ?? [])) {
-      if (det.label.toLowerCase().includes(searchObj.label.toLowerCase())) {
+      if (labelMatches(searchObj.label, det.label)) {
         score += 6;
-        if (searchObj.color && det.color?.toLowerCase() === searchObj.color.toLowerCase()) score += 4;
+        const color = searchObj.color?.toLowerCase();
+        if (color && (det.color?.toLowerCase().includes(color) || descForColor.includes(color))) score += 4;
       }
     }
   }
@@ -168,9 +184,9 @@ function scoreNode(n: GraphNode, analysis: QueryAnalysis, terms: string[], direc
   return score;
 }
 
-function scoredSort(nodes: GraphNode[], analysis: QueryAnalysis, terms: string[], directIds: Set<string>): GraphNode[] {
+function scoredSort(graph: ContextGraph, nodes: GraphNode[], analysis: QueryAnalysis, terms: string[], directIds: Set<string>): GraphNode[] {
   return nodes
-    .map(n => ({ node: n, score: scoreNode(n, analysis, terms, directIds), isDirect: directIds.size > 0 && directIds.has(n.id) }))
+    .map(n => ({ node: n, score: scoreNode(graph, n, analysis, terms, directIds), isDirect: directIds.size > 0 && directIds.has(n.id) }))
     .sort((a, b) => {
       // Direct matches always rank above edge-expanded results
       if (a.isDirect !== b.isDirect) return a.isDirect ? -1 : 1;
@@ -179,7 +195,40 @@ function scoredSort(nodes: GraphNode[], analysis: QueryAnalysis, terms: string[]
     .map(({ node }) => node);
 }
 
+// ─── Location matching ───────────────────────────────────────────────────────
+
+// The searchable location text for a node: its case's incident place label and
+// district, plus the node's own scene_type. Lowercased for substring matching.
+function nodeLocationText(graph: ContextGraph, n: GraphNode): string {
+  const loc = graph.cases[n.case_id]?.location;
+  return [loc?.label, loc?.district, n.scene_type].filter(Boolean).join(' ').toLowerCase();
+}
+
+// ─── Object matching ─────────────────────────────────────────────────────────
+
+// True if a node contains the searched object: a detected label matches (via
+// synonyms) and, when a color is specified, it appears either on the detected
+// object or in the node's description.
+function nodeMatchesObject(n: GraphNode, searchObj: { label: string; color?: string }): boolean {
+  const color = searchObj.color?.toLowerCase();
+  const desc = (n.description ?? '').toLowerCase();
+  return (n.objects_detected ?? []).some(det =>
+    labelMatches(searchObj.label, det.label) &&
+    (!color || det.color?.toLowerCase().includes(color) || desc.includes(color))
+  );
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// Generic terms that appear in query reformulations and boilerplate metadata
+// alike ("search for evidence related to…", "This evidence item is…"). Left in,
+// they cause the fuzzy fallback to match nearly every record, so they're
+// dropped from query terms.
+const FILLER_WORDS = new Set([
+  'evidence', 'search', 'find', 'show', 'showing', 'related', 'relating', 'item',
+  'items', 'containing', 'depicting', 'depicts', 'record', 'records', 'result',
+  'results', 'footage', 'file', 'files', 'please', 'need', 'want', 'looking',
+]);
 
 const STOP_WORDS = new Set([
   'the', 'and', 'or', 'for', 'not', 'but', 'nor', 'yet', 'so',
@@ -192,9 +241,13 @@ const STOP_WORDS = new Set([
 ]);
 
 function queryTerms(analysis: QueryAnalysis): string[] {
+  const keep = (w: string) => w.length > 2 && !STOP_WORDS.has(w) && !FILLER_WORDS.has(w);
   return [
-    ...analysis.reformulated_query.toLowerCase().split(/\s+/).filter(w => w.length > 2 && !STOP_WORDS.has(w)),
-    ...analysis.entities.keywords.map(k => k.toLowerCase()).filter(k => !STOP_WORDS.has(k)),
+    ...analysis.reformulated_query.toLowerCase().split(/\s+/).filter(keep),
+    ...analysis.entities.keywords.map(k => k.toLowerCase()).filter(keep),
+    // Include searched object labels/colors so fuzzy fallback can still match
+    // free-text descriptions ("blue sedan") when structured filters miss.
+    ...analysis.entities.objects.flatMap(o => [o.label.toLowerCase(), o.color?.toLowerCase()].filter(Boolean) as string[]),
   ];
 }
 

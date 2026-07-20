@@ -169,6 +169,7 @@ ${vectorResult?.text ?? '(no vector results)'}`;
     return {
       summary: parsed.summary ?? '',
       results,
+      omniResults: [],
       entities: [...entities, ...supplementalEntities],
       chips: [], // chips are built upstream by buildFilterChips
       suggestions: parsed.suggestions ?? [],
@@ -231,6 +232,7 @@ function emptyOutput(
   return {
     summary: '',
     results: [],
+    omniResults: [],
     entities,
     chips: [],
     suggestions: [],

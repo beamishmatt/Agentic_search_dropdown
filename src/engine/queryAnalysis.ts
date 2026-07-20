@@ -1,5 +1,5 @@
 import { chatCompletion } from '../utils/openaiClient';
-import { FilterChip, EntityResult } from '../data/types';
+import { FilterChip, EntityResult, ResultKind } from '../data/types';
 
 export interface ExtractedEntities {
   case_ids: string[];
@@ -18,6 +18,27 @@ export interface QueryAnalysis {
   entities: ExtractedEntities;
   reformulated_query: string;
   search_strategy: string;
+  // Which omni-search result kinds the query is likely targeting. Used only to
+  // rank/boost sections — never to hard-exclude — so omni search stays broad.
+  target_kinds?: ResultKind[];
+}
+
+// Keyword heuristic for the target kinds a query is aiming at. Runs locally so
+// it works with or without an LLM key; LLM output (when present) is merged in.
+export function inferTargetKinds(query: string): ResultKind[] {
+  const q = query.toLowerCase();
+  const kinds = new Set<ResultKind>();
+
+  const has = (...words: string[]) => words.some(w => q.includes(w));
+
+  if (has('setting', 'settings', 'retention', 'policy', 'policies', 'sso', 'saml', 'mfa', 'audit', 'integration', 'configure', 'configuration', 'admin')) kinds.add('setting');
+  if (has('permission', 'permissions', 'capability', 'capabilities', 'can ', 'allowed', 'access to', 'role', 'roles', 'redact', 'facial', 'watchlist')) kinds.add('capability');
+  if (has('who', 'user', 'users', 'officer', 'person', 'people', 'detective', 'sergeant', 'assigned to', 'contact')) kinds.add('person');
+  if (has('device', 'devices', 'camera', 'body cam', 'body-worn', 'body worn', 'taser', 'fleet', 'alpr', 'serial')) kinds.add('device');
+  if (has('case', 'cases', 'investigation', 'incident')) kinds.add('case');
+  if (has('evidence', 'video', 'photo', 'image', 'footage', 'document', 'report', 'recording', 'clip')) kinds.add('evidence');
+
+  return [...kinds];
 }
 
 const SYSTEM_PROMPT = `You are an evidence search query analyzer for a law enforcement evidence management system.
@@ -39,8 +60,11 @@ Return ONLY valid JSON with this exact structure (no markdown, no backticks):
     "categories": []
   },
   "reformulated_query": "Clear, precise restatement of what the user wants",
-  "search_strategy": "Brief description of how to search"
+  "search_strategy": "Brief description of how to search",
+  "target_kinds": ["evidence | case | person | device | setting | capability"]
 }
+
+target_kinds: which kinds of records the user is looking for. "who can delete evidence" → ["capability","person"]; "retention policy" → ["setting"]; "facial match settings" → ["setting","capability"]; "body camera footage" → ["evidence","device"]. For pure settings/permissions/admin queries (configuring a policy, a capability, "... settings"), return ONLY ["setting"] and/or ["capability"] — do NOT include "evidence" or "case". Otherwise include "evidence" whenever media/files could be relevant.
 
 Evidence types: video, audio, image, document, pdf, other
 Categories: Assault, Traffic Stop, Homicide, Theft, Shooting, Domestic, Drug Offense, Burglary, Police Event, Non Event, Other
@@ -61,7 +85,11 @@ export async function analyzeQuery(query: string): Promise<QueryAnalysis> {
   );
 
   try {
-    return JSON.parse(raw) as QueryAnalysis;
+    const parsed = JSON.parse(raw) as QueryAnalysis;
+    // Merge the LLM's target kinds with the local heuristic so we never miss an
+    // obvious kind (e.g. a "settings" match) the model didn't flag.
+    parsed.target_kinds = [...new Set([...(parsed.target_kinds ?? []), ...inferTargetKinds(query)])];
+    return parsed;
   } catch {
     // Fallback: basic keyword analysis without API
     return fallbackAnalysis(query);
@@ -105,6 +133,7 @@ function fallbackAnalysis(query: string): QueryAnalysis {
     },
     reformulated_query: query,
     search_strategy: 'Keyword match across title, description, category',
+    target_kinds: inferTargetKinds(query),
   };
 }
 

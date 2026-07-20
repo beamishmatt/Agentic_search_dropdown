@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
 import { useNavigate } from 'react-router-dom';
 import {
   Search,
   X,
   ArrowUpRight,
+  ArrowRight,
   Video,
   FileText,
   Image,
@@ -17,10 +17,14 @@ import {
   Smartphone,
   AlertTriangle,
   Maximize2,
+  Mic,
+  MapPin,
+  Settings as SettingsIcon,
+  Key,
+  Sparkles,
 } from 'lucide-react';
-import { agentSearch } from '../engine/agentSearch';
+import { agentSearch, reverseImageSearch } from '../engine/agentSearch';
 import { SearchOutput, SearchEvidenceResult, MediaClass } from '../data/types';
-import { useSearchFilters } from './SearchFilterBar';
 
 // ─── Scope chips ──────────────────────────────────────────────────────────────
 
@@ -73,6 +77,12 @@ export const SCOPE_CHIPS: ScopeChip[] = [
     label: 'Multi-cam',
     icon: <LayoutGrid size={13} />,
     filter: (r) => r.media_class === 'video' || r.tags?.some(t => t.toLowerCase().includes('multi-cam')) || false,
+  },
+  {
+    id: 'location',
+    label: 'Location',
+    icon: <MapPin size={13} />,
+    filter: (r) => !!r.location,
   },
 ];
 
@@ -242,8 +252,42 @@ function CaseChip({ label, query, onClick }: { label: string; query: string; onC
   );
 }
 
-// ─── Filter section ───────────────────────────────────────────────────────────
+// ─── Omni result row (people / devices / settings / capabilities) ─────────────
 
+function OmniRow({ icon, title, subtitle, query, onClick }: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle?: string;
+  query: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left',
+        padding: '8px 14px', backgroundColor: 'transparent', border: 'none', cursor: 'pointer',
+      }}
+      onMouseEnter={e => (e.currentTarget.style.backgroundColor = 'var(--fill-hover)')}
+      onMouseLeave={e => (e.currentTarget.style.backgroundColor = 'transparent')}
+    >
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 6, backgroundColor: 'var(--fill-weak)', color: 'var(--text-weak)', flexShrink: 0 }}>
+        {icon}
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--foreground)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <HighlightText text={title} query={query} />
+        </div>
+        {subtitle && (
+          <div style={{ fontSize: 11, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {subtitle}
+          </div>
+        )}
+      </div>
+      <ArrowUpRight size={13} style={{ color: 'var(--text-weak)', flexShrink: 0 }} />
+    </button>
+  );
+}
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
@@ -256,75 +300,13 @@ interface SearchDropdownProps {
   resultCount?: number;
   onResultTagClick?: () => void;
   onClearResults?: () => void;
+  onVoiceSearch?: () => void;
+  onImageSearch?: () => void;
+  onAiMode?: () => void;
 }
 
-const PLACEHOLDER_QUERIES = [
-  'body cam footage from PBPD-2025-088142…',
-  'witness statements officer Thibodaux…',
-  'traffic stop videos last 30 days…',
-  'EV-PSTDF2T9…',
-  'shooting incident photos case 088142…',
-  'drug offense documents officer Martin…',
-];
 
-const CYCLE_INTERVAL = 3400;
-
-function useCyclingPlaceholder(active: boolean): string {
-  const [index, setIndex] = useState(0);
-
-  useEffect(() => {
-    if (!active) return;
-    const t = setInterval(() => {
-      setIndex(i => (i + 1) % PLACEHOLDER_QUERIES.length);
-    }, CYCLE_INTERVAL);
-    return () => clearInterval(t);
-  }, [active]);
-
-  return PLACEHOLDER_QUERIES[index];
-}
-
-function AnimatedPlaceholder({ text }: { text: string }) {
-  return (
-    <div
-      aria-hidden
-      style={{
-        position: 'absolute',
-        left: 32,
-        right: 32,
-        top: 0,
-        bottom: 0,
-        display: 'flex',
-        alignItems: 'center',
-        pointerEvents: 'none',
-        overflow: 'hidden',
-      }}
-    >
-      <AnimatePresence mode="wait">
-        <motion.span
-          key={text}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0, filter: 'blur(4px)', transition: { duration: 0.18 } }}
-          style={{ display: 'flex', overflow: 'hidden', whiteSpace: 'nowrap' }}
-        >
-          {text.split('').map((char, i) => (
-            <motion.span
-              key={i}
-              initial={{ opacity: 0, filter: 'blur(6px)' }}
-              animate={{ opacity: 1, filter: 'blur(0px)' }}
-              transition={{ duration: 0.3, delay: i * 0.018 }}
-              style={{ fontSize: '12px', color: 'rgba(0,0,0,0.35)', fontFamily: 'inherit', lineHeight: 1 }}
-            >
-              {char === ' ' ? '\u00a0' : char}
-            </motion.span>
-          ))}
-        </motion.span>
-      </AnimatePresence>
-    </div>
-  );
-}
-
-export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpenSearch, resultCount, onResultTagClick, onClearResults }: SearchDropdownProps) {
+export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpenSearch, resultCount, onResultTagClick, onClearResults, onVoiceSearch, onImageSearch, onAiMode }: SearchDropdownProps) {
   const navigate = useNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
   const [isOpen, setIsOpen] = useState(false);
@@ -333,17 +315,43 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
   const [output, setOutput] = useState<SearchOutput | null>(null);
   const [recentSearches, setRecentSearches] = useState<string[]>(loadRecentSearches);
   const [selectedScopes, setSelectedScopes] = useState<Set<string>>(new Set());
-  const searchFilters = useSearchFilters();
-  const { filterResults } = searchFilters;
-  const cyclingPlaceholder = useCyclingPlaceholder(!query && !isFocused);
+  const [imageUploadOpen, setImageUploadOpen] = useState(false);
+  const [uploadedImage, setUploadedImage] = useState<{ name: string; url: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const toggleScope = (id: string) => {
-    setSelectedScopes(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) { next.delete(id); } else { next.add(id); }
-      return next;
-    });
+  const handleImageFile = (file: File | undefined) => {
+    if (!file || !file.type.startsWith('image/')) return;
+    const url = URL.createObjectURL(file);
+    setUploadedImage({ name: file.name, url });
+    onImageSearch?.();
+
+    // Kick off the reverse image search as soon as the image is uploaded.
+    const version = ++searchVersion.current;
+    setIsLoading(true);
+    setOutput(null);
+    // Brief delay so the "Searching…" state is visible before results land.
+    setTimeout(() => {
+      if (version !== searchVersion.current) return;
+      setOutput(reverseImageSearch());
+      setIsLoading(false);
+    }, 600);
   };
+
+  const openImageUploader = () => {
+    setIsOpen(true);
+    setImageUploadOpen(true);
+  };
+
+  const closeImageUploader = () => {
+    setImageUploadOpen(false);
+    if (uploadedImage) URL.revokeObjectURL(uploadedImage.url);
+    setUploadedImage(null);
+    // Cancel any in-flight image search and clear its results.
+    searchVersion.current++;
+    setOutput(null);
+    setIsLoading(false);
+  };
+
   const searchVersion = useRef(0);
 
   // Close on outside click
@@ -351,24 +359,20 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
     function handleClick(e: MouseEvent) {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setIsOpen(false);
+        setImageUploadOpen(false);
       }
     }
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
-  // Keyboard shortcuts: Esc to close, / to focus
+  // Keyboard shortcuts: Esc to close
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         setIsOpen(false);
+        setImageUploadOpen(false);
         inputRef.current?.blur();
-      } else if (e.key === '/' && document.activeElement !== inputRef.current) {
-        const tag = (document.activeElement as HTMLElement)?.tagName;
-        if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
-          e.preventDefault();
-          inputRef.current?.focus();
-        }
       }
     }
     window.addEventListener('keydown', handleKey);
@@ -397,13 +401,18 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
           if (version !== searchVersion.current) return;
           setOutput(prev => ({
             summary: prev?.summary ?? '',
+            aiOverview: prev?.aiOverview,
             results: partial,
+            omniResults: prev?.omniResults ?? [],
             entities: prev?.entities ?? [],
             chips: prev?.chips ?? [],
             suggestions: prev?.suggestions ?? [],
             graph_context: prev?.graph_context ?? { cases_involved: [], total_scoped: 0, total_matched: 0 },
           }));
-          setIsLoading(false);
+          // Keep the loading state until the full result lands when the partial
+          // is empty — otherwise a pending AI overview or omni-only result set
+          // would briefly flash "No results".
+          if (partial.length > 0) setIsLoading(false);
         });
         if (version !== searchVersion.current) return;
         setOutput(result);
@@ -443,7 +452,7 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
 
   const activeScopes = SCOPE_CHIPS.filter(s => selectedScopes.has(s.id));
   const filteredResults = output
-    ? filterResults(activeScopes.length > 0
+    ? (activeScopes.length > 0
         ? output.results.filter(r => activeScopes.some(s => s.filter(r)))
         : output.results)
     : [];
@@ -474,7 +483,25 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
         subtitle: `${output?.results.filter(r => r.case_id === cid).length ?? 0} evidence`,
       }));
 
-  const dropdownVisible = isOpen && (showRecents ? true : (isLoading || hasResults || output !== null));
+  // Non-evidence omni results (settings, capabilities, people, devices) — these
+  // never appear in `output.results` (evidence only), so a query like "face
+  // match settings" would otherwise show "No results". Not shown in image mode.
+  const omniResults = (!imageUploadOpen && output?.omniResults) || [];
+  const omniSections = [
+    { key: 'person',     label: 'People',       items: omniResults.filter(r => r.kind === 'person'),     icon: <User size={15} />,         fallback: '/settings/users' },
+    { key: 'device',     label: 'Devices',      items: omniResults.filter(r => r.kind === 'device'),     icon: <Smartphone size={15} />,   fallback: '/settings/devices' },
+    { key: 'setting',    label: 'Settings',     items: omniResults.filter(r => r.kind === 'setting'),    icon: <SettingsIcon size={15} />, fallback: '/settings' },
+    { key: 'capability', label: 'Capabilities', items: omniResults.filter(r => r.kind === 'capability'), icon: <Key size={15} />,          fallback: '/settings/permissions' },
+  ].filter(s => s.items.length > 0);
+  const hasOmni = omniSections.length > 0;
+
+  const aiOverview = (!imageUploadOpen && output?.aiOverview) || '';
+  const hasAiOverview = aiOverview.length > 0;
+
+  const imageMode = imageUploadOpen && !!uploadedImage;
+  const dropdownVisible = isOpen && (showRecents ? true : (isLoading || hasResults || hasOmni || hasAiOverview || output !== null));
+  const panelOpen = dropdownVisible || (isOpen && imageUploadOpen);
+  const showImageResults = imageMode && (isLoading || output !== null);
 
   return (
     <div
@@ -494,16 +521,13 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
           zIndex: 200,
           backgroundColor: '#ffffff',
           border: '1px solid var(--border)',
-          borderRadius: dropdownVisible ? '10px 10px 8px 8px' : 10,
-          boxShadow: dropdownVisible ? '0 6px 20px rgba(0,0,0,0.14)' : 'none',
+          borderRadius: panelOpen ? '10px 10px 8px 8px' : 10,
+          boxShadow: panelOpen ? '0 6px 20px rgba(0,0,0,0.14)' : 'none',
         }}
       >
         {/* Input row */}
         <div style={{ position: 'relative', display: 'flex', alignItems: 'center', height: 36 }}>
           <Search size={15} style={{ position: 'absolute', left: 10, color: 'var(--text-weak)', pointerEvents: 'none' }} />
-          {!query && !isFocused && (
-            <AnimatedPlaceholder text={cyclingPlaceholder} />
-          )}
           <input
             ref={inputRef}
             type="text"
@@ -517,12 +541,12 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
                 onOpenSearch(query.trim(), undefined, output ?? undefined);
               }
             }}
-            placeholder=""
+            placeholder="Search for anything"
             style={{
               width: '100%',
               height: '100%',
               paddingLeft: 32,
-              paddingRight: ((resultCount ?? 0) > 0 && !isOpen) ? 130 : (query ? 52 : 32),
+              paddingRight: ((resultCount ?? 0) > 0 && !isOpen) ? 130 : (query ? 120 : 140),
               border: 'none',
               backgroundColor: 'transparent',
               color: 'var(--foreground)',
@@ -550,61 +574,115 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
               </button>
             )}
             {isLoading && !query && <Loader2 size={13} style={{ color: 'var(--text-weak)', animation: 'spin 1s linear infinite' }} />}
-            {!isOpen && (
-              <kbd style={{
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                width: 18, height: 18, border: '1px solid var(--border)', borderRadius: 4,
-                fontSize: 12, color: 'var(--text-weak)', backgroundColor: 'var(--fill-weaker)',
-                fontFamily: 'inherit', lineHeight: 1, pointerEvents: 'none',
-              }}>/</kbd>
+            {!query && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <button
+                  type="button"
+                  title="Search by voice"
+                  aria-label="Search by voice"
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={e => { e.stopPropagation(); onVoiceSearch?.(); }}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-weak)', borderRadius: 99 }}
+                >
+                  <Mic size={15} />
+                </button>
+                <button
+                  type="button"
+                  title="Search by image"
+                  aria-label="Search by image"
+                  onMouseDown={e => e.preventDefault()}
+                  onClick={e => { e.stopPropagation(); openImageUploader(); }}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-weak)', borderRadius: 99 }}
+                >
+                  <Image size={15} />
+                </button>
+              </div>
             )}
             {query && isOpen && (
-              <button
-                onClick={handleClear}
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-weak)', borderRadius: 99 }}
-              >
-                <X size={13} />
-              </button>
+              <>
+                <button
+                  onClick={handleClear}
+                  title="Clear search"
+                  aria-label="Clear search"
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-weak)', borderRadius: 99 }}
+                >
+                  <X size={13} />
+                </button>
+                <div style={{ width: 1, height: 18, backgroundColor: 'var(--border)', flexShrink: 0 }} />
+              </>
             )}
           </div>
         </div>
 
-        {/* Filter chips — always visible when open */}
-        {isOpen && (
-          <div style={{ borderTop: '1px solid var(--border)', padding: '8px 12px', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {SCOPE_CHIPS.map(chip => {
-              const active = selectedScopes.has(chip.id);
-              return (
+        {/* Image uploader — reverse image search */}
+        {isOpen && imageUploadOpen && (
+          <div style={{ borderTop: '1px solid var(--border)', padding: 12 }}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: 'none' }}
+              onChange={e => handleImageFile(e.target.files?.[0])}
+            />
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Search by image
+              </span>
+              <button
+                type="button"
+                onClick={closeImageUploader}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-weak)', borderRadius: 99 }}
+              >
+                <X size={13} />
+              </button>
+            </div>
+            {uploadedImage ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <img src={uploadedImage.url} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)' }} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: 'var(--foreground)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{uploadedImage.name}</p>
+                  <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--text-weak)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {isLoading
+                      ? (<><Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />Searching for visually similar evidence…</>)
+                      : `${output?.results.length ?? 0} visually similar ${(output?.results.length ?? 0) === 1 ? 'result' : 'results'}`}
+                  </p>
+                </div>
                 <button
-                  key={chip.id}
-                  onClick={() => toggleScope(chip.id)}
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 5,
-                    padding: '4px 11px', borderRadius: 99, cursor: 'pointer',
-                    fontSize: 12, fontWeight: active ? 600 : 400,
-                    border: `1px solid ${active ? 'transparent' : 'var(--border)'}`,
-                    backgroundColor: active ? 'var(--foreground)' : 'transparent',
-                    color: active ? 'var(--raised)' : 'var(--foreground)',
-                    transition: 'all 0.12s',
-                    fontFamily: 'inherit',
-                  }}
-                  onMouseEnter={e => { if (!active) e.currentTarget.style.backgroundColor = 'var(--fill-hover)'; }}
-                  onMouseLeave={e => { if (!active) e.currentTarget.style.backgroundColor = 'transparent'; }}
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px', fontSize: 12, fontFamily: 'inherit', color: 'var(--text-weak)', cursor: 'pointer', whiteSpace: 'nowrap' }}
                 >
-                  {chip.icon}
-                  {chip.label}
+                  Replace
                 </button>
-              );
-            })}
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={e => { e.preventDefault(); }}
+                onDrop={e => { e.preventDefault(); handleImageFile(e.dataTransfer.files?.[0]); }}
+                style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6,
+                  width: '100%', padding: '24px 12px',
+                  border: '1px dashed var(--border)', borderRadius: 8,
+                  backgroundColor: 'var(--fill-weaker)', cursor: 'pointer',
+                  color: 'var(--text-weak)', fontFamily: 'inherit',
+                }}
+              >
+                <Image size={22} />
+                <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--foreground)' }}>Drop an image or click to upload</span>
+                <span style={{ fontSize: 12 }}>Find visually similar evidence</span>
+              </button>
+            )}
           </div>
         )}
 
         {/* Dropdown content */}
-        {dropdownVisible && (
+        {((dropdownVisible && !imageUploadOpen) || showImageResults) && (
         <div style={{ borderTop: '1px solid var(--border)', paddingBottom: 12 }}>
 
           {/* ── Recent searches / Autocomplete suggestions ── */}
-          {showRecents && (
+          {showRecents && !imageMode && (
             <>
               {/* Recent searches / Autocomplete suggestions */}
               {q.length === 0 ? (
@@ -662,10 +740,10 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
           )}
 
           {/* ── Results view ── */}
-          {!showRecents && (
+          {(!showRecents || imageMode) && (
             <>
               {/* Loading state */}
-              {isLoading && topResults.length === 0 && (
+              {isLoading && topResults.length === 0 && !imageMode && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '14px', color: 'var(--text-weak)', fontSize: 13 }}>
                   <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
                   Searching...
@@ -673,9 +751,37 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
               )}
 
               {/* No results state */}
-              {!isLoading && output && topResults.length === 0 && (
+              {!isLoading && output && topResults.length === 0 && caseMatches.length === 0 && !hasOmni && !hasAiOverview && (
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '32px 14px' }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--foreground)' }}>No results for "{q}"</div>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--foreground)' }}>
+                    {imageMode ? 'No visually similar evidence found' : `No results for "${q}"`}
+                  </div>
+                </div>
+              )}
+
+              {/* AI overview — direct answer to a policy / procedure question */}
+              {!isLoading && hasAiOverview && (
+                <div style={{ padding: '12px 14px', borderBottom: (caseMatches.length > 0 || topResults.length > 0 || hasOmni) ? '1px solid var(--border)' : 'none' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                    <Sparkles size={13} style={{ color: '#E07010' }} />
+                    <span style={{
+                      fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
+                      backgroundImage: 'linear-gradient(90deg, #F5C400 0%, #E07010 50%, #3A54A8 100%)',
+                      WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent',
+                    }}>
+                      AI overview
+                    </span>
+                  </div>
+                  <p style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--foreground)', margin: 0, whiteSpace: 'pre-wrap' }}>{aiOverview}</p>
+                  <button
+                    onClick={() => { setIsOpen(false); onAiMode?.(); }}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginTop: 10, padding: '4px 0', background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 500, color: '#2563eb', fontFamily: 'inherit' }}
+                    onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
+                    onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
+                  >
+                    Ask a follow-up in AI mode
+                    <ArrowRight size={13} />
+                  </button>
                 </div>
               )}
 
@@ -703,9 +809,9 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
               {topResults.length > 0 && (
                 <>
                   <div style={{ padding: '8px 14px 2px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Top Matches</span>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{imageMode ? 'Visual Matches' : 'Top Matches'}</span>
                     <button
-                      onClick={() => { setIsOpen(false); onOpenSearch(q, undefined, output ?? undefined); }}
+                      onClick={() => { setIsOpen(false); onOpenSearch(imageMode ? 'Visually similar evidence' : q, undefined, output ?? undefined); }}
                       style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 500, color: '#2563eb', padding: 0 }}
                       onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
                       onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
@@ -727,6 +833,38 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
                   ))}
                 </>
               )}
+
+              {/* Settings, capabilities, people & devices (non-evidence matches) */}
+              {!isLoading && !imageMode && omniSections.map((section, si) => (
+                <React.Fragment key={section.key}>
+                  {(si > 0 || topResults.length > 0) && (
+                    <div style={{ height: 1, backgroundColor: 'var(--border)', margin: '4px 14px' }} />
+                  )}
+                  <div style={{ padding: '8px 14px 2px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-weak)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{section.label}</span>
+                    {si === 0 && topResults.length === 0 && (
+                      <button
+                        onClick={() => { setIsOpen(false); onOpenSearch(q, undefined, output ?? undefined); }}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 500, color: '#2563eb', padding: 0 }}
+                        onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
+                        onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
+                      >
+                        See all {totalCount > 0 ? `${totalCount} ` : ''}results
+                      </button>
+                    )}
+                  </div>
+                  {section.items.slice(0, 4).map(item => (
+                    <OmniRow
+                      key={item.id}
+                      icon={section.icon}
+                      title={item.title}
+                      subtitle={item.subtitle}
+                      query={q}
+                      onClick={() => { setIsOpen(false); onQueryChange(''); navigate(item.deeplink ?? section.fallback); }}
+                    />
+                  ))}
+                </React.Fragment>
+              ))}
 
             </>
           )}

@@ -10,6 +10,7 @@
 // evidence (images / video frames) has nowhere to host an overlay in v1.
 
 import type { GraphNode } from '../data/types';
+import { tokenMatchesText } from './objectSynonyms';
 
 export type AttributeMatch = {
   evidenceId: string;
@@ -69,7 +70,9 @@ export function findAttributeMatches(nodes: GraphNode[], query: string): Attribu
     const haystack = nodeAttributeText(node);
     if (!haystack) continue;
     let matched = 0;
-    for (const t of tokens) if (haystack.includes(t)) matched++;
+    // Match through synonyms so generic query terms ("car") hit specific
+    // detected labels ("sedan"), consistent with the graph object filter.
+    for (const t of tokens) if (tokenMatchesText(t, haystack)) matched++;
     if (matched >= required) scored.push({ evidenceId: node.id, matched });
   }
   // Best matches first; ties keep input order (graph node iteration order).

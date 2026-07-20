@@ -80,6 +80,45 @@ function buildJoinedPage(items: TextIndexItem[]): { joined: string; offsets: num
   return { joined: parts.join(' '), offsets };
 }
 
+// Builds a short, single-line snippet of `text` around [start, end), padded on
+// both sides and ellipsized where it was clipped. Used to show *why* a document
+// matched a full-text search.
+function buildSnippet(text: string, start: number, end: number, pad = 60): string {
+  const s = Math.max(0, start - pad);
+  const e = Math.min(text.length, end + pad);
+  let snippet = text.slice(s, e).replace(/\s+/g, ' ').trim();
+  if (s > 0) snippet = '…' + snippet;
+  if (e < text.length) snippet = snippet + '…';
+  return snippet;
+}
+
+// Full-text search across every indexed PDF. Returns a map of fileUrl → snippet
+// for each document whose body text contains the query as a (whitespace-
+// flexible) phrase — the same match semantics as findMatches / the in-document
+// highlighter, so search hits and highlights stay in sync. Loads the index on
+// demand and is safe to call before it has been fetched.
+export async function findContentMatches(query: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const trimmed = query.trim();
+  if (!trimmed) return out;
+  const index = await loadTextIndex();
+  if (!index) return out;
+  const regex = queryToRegex(trimmed);
+  for (const [fileUrl, doc] of Object.entries(index)) {
+    for (const page of doc.pages) {
+      if (page.items.length === 0) continue;
+      const joined = page.items.map(i => i.str).join(' ');
+      regex.lastIndex = 0;
+      const m = regex.exec(joined);
+      if (m) {
+        out.set(fileUrl, buildSnippet(joined, m.index, m.index + m[0].length));
+        break; // one snippet per document is enough for a result row
+      }
+    }
+  }
+  return out;
+}
+
 export function findMatches(
   results: { evidenceId: string; fileUrl?: string }[],
   query: string,

@@ -8,6 +8,8 @@ import { Play, Pause, Volume2, Maximize, SkipBack, SkipForward, RotateCw, ZoomIn
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui/dropdown-menu';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { OverviewPanel } from '../OverviewPanel';
+import { SyntheticMap } from '../SyntheticMap';
+import { getContextGraph } from '../../storage/config';
 
 type PanelType = 'overview' | 'details' | 'maps' | 'notes' | 'people' | 'markers';
 
@@ -328,18 +330,37 @@ export function EvidenceDetailPage() {
                       </div>
                     )}
 
-                    {activePanel === 'maps' && (
-                      <div 
-                        style={{
-                          fontSize: 'var(--text-body)',
-                          fontWeight: 'var(--font-weight-regular)',
-                          fontFamily: "'IBM Plex Sans', sans-serif",
-                          color: 'var(--muted-foreground)'
-                        }}
-                      >
-                        Location and geospatial data will be displayed here.
-                      </div>
-                    )}
+                    {activePanel === 'maps' && (() => {
+                      const location = getContextGraph().cases[caseId || '']?.location;
+                      if (!location) {
+                        return (
+                          <div
+                            style={{
+                              fontSize: 'var(--text-body)',
+                              fontWeight: 'var(--font-weight-regular)',
+                              fontFamily: "'IBM Plex Sans', sans-serif",
+                              color: 'var(--muted-foreground)',
+                            }}
+                          >
+                            No location data for this evidence.
+                          </div>
+                        );
+                      }
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                          <div style={{ height: 320, borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)' }}>
+                            <SyntheticMap
+                              points={[{ id: evidence.uuid, x: location.x, y: location.y, label: location.label, selected: true }]}
+                              district={location.district}
+                            />
+                          </div>
+                          <div style={{ fontSize: 'var(--text-body)', fontFamily: "'IBM Plex Sans', sans-serif", color: 'var(--foreground)' }}>
+                            {location.label}
+                            {location.district ? <span style={{ color: 'var(--muted-foreground)' }}> · {location.district}</span> : null}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {activePanel === 'notes' && (
                       <div 
