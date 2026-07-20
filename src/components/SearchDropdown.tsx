@@ -475,7 +475,11 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
   const evidenceIdMatches = looksLikeEvidenceIdQuery && output
     ? [...new Set(output.results.map(r => r.evidence_id).filter(Boolean))].map(id => {
         const result = output.results.find(r => r.evidence_id === id);
-        return { id, name: id, subtitle: result?.category || result?.media_class || 'Evidence' };
+        return {
+          id,
+          name: id,
+          subtitle: result ? [result.title, result.category, result.officer].filter(Boolean).join(' • ') : 'Evidence',
+        };
       })
     : [];
 
@@ -508,7 +512,7 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
     : filteredResults.map(r => ({
         id: r.evidence_id,
         title: r.evidence_id,
-        subtitle: r.title,
+        subtitle: [r.title, r.category, r.officer].filter(Boolean).join(' • '),
         onClick: () => { setIsOpen(false); onQueryChange(''); navigate(`/search/evidence/${r.evidence_id}`); },
       }));
 
