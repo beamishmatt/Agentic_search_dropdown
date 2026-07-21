@@ -24,7 +24,7 @@ export async function generateAndSaveDescription(nodeId: string): Promise<string
   if (!key) return null;
 
   const objectsList = node.objects_detected?.length
-    ? node.objects_detected.map(o => `${o.color ? o.color + ' ' : ''}${o.label}`).join(', ')
+    ? node.objects_detected.map(o => `${o.color ? o.color + ' ' : ''}${o.make ? o.make + ' ' : ''}${o.model ? o.model + ' ' : ''}${o.label}`).join(', ')
     : null;
 
   const contextLines = [

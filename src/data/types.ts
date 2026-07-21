@@ -54,6 +54,8 @@ export interface ObjectDetected {
   confidence: 'high' | 'medium' | 'low';
   position: string;
   count: number;
+  make?: string;
+  model?: string;
 }
 
 // --- Agentic engine types ---

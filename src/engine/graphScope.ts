@@ -270,7 +270,7 @@ function fuzzyMatch(nodes: GraphNode[], terms: string[]): GraphNode[] {
       n.officer,
       n.case_id,
       n.source ?? '',
-      ...(n.objects_detected ?? []).map(o => o.label),
+      ...(n.objects_detected ?? []).flatMap(o => [o.label, o.make, o.model].filter(Boolean) as string[]),
       ...(n.tags ?? []),
     ].join(' ').toLowerCase();
 

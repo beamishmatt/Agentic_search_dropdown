@@ -1042,14 +1042,16 @@
       "source": "Outpost",
       "duration": null,
       "status": "complete",
-      "description": "The image depicts a blue sedan driving through an intersection on a paved road. There are visible road markings, including pedestrian crosswalk lines. The scene appears to be captured from a traffic camera positioned above the road.",
+      "description": "The image depicts a blue Honda Civic sedan driving through an intersection on a paved road. There are visible road markings, including pedestrian crosswalk lines. The scene appears to be captured from a traffic camera positioned above the road.",
       "objects_detected": [
         {
           "label": "sedan",
           "color": "blue",
           "confidence": "high",
           "position": "center",
-          "count": 1
+          "count": 1,
+          "make": "Honda",
+          "model": "Civic"
         }
       ],
       "scene_type": "intersection",

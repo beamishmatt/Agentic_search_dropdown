@@ -83,6 +83,29 @@ export function toEvidenceResult(e: SearchEvidenceResult): EvidenceResult {
 
 // ─── Case provider ─────────────────────────────────────────────────────────────
 
+// One-sentence synthesized overview of a case, built entirely from graph data
+// (status, dominant evidence category, lead officer, evidence count, incident
+// location) so it stays consistent with whatever the graph actually contains.
+export function summarizeCase(caseId: string, graph: ContextGraph): string {
+  const c = graph.cases[caseId];
+  if (!c) return 'Case details unavailable.';
+
+  const categoryCounts = new Map<string, number>();
+  for (const evidenceId of c.evidence_ids) {
+    const category = graph.nodes[evidenceId]?.category;
+    if (category) categoryCounts.set(category, (categoryCounts.get(category) ?? 0) + 1);
+  }
+  const topCategory = [...categoryCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+
+  const count = c.evidence_ids.length;
+  const evidencePhrase = `${count} piece${count !== 1 ? 's' : ''} of evidence`;
+  const locationPhrase = c.location?.label ? ` near ${c.location.label}` : '';
+  const kindPhrase = topCategory ? `${topCategory.toLowerCase()} case` : 'case';
+  const status = c.status.charAt(0).toUpperCase() + c.status.slice(1);
+
+  return `${status} ${kindPhrase} led by Officer ${c.lead_officer}, with ${evidencePhrase}${locationPhrase}.`;
+}
+
 export function caseProvider(query: string, graph: ContextGraph, analysis?: QueryAnalysis): CaseResult[] {
   const ts = terms(query);
   const listAll = isTypeIntent(query, ['case', 'cases']);
@@ -104,7 +127,7 @@ export function caseProvider(query: string, graph: ContextGraph, analysis?: Quer
         kind: 'case' as const,
         id,
         title: c.title || id,
-        subtitle: `${c.status} · ${c.evidence_ids.length} items`,
+        subtitle: summarizeCase(id, graph),
         relevance: '',
         deeplink: `/cases/${id}`,
         status: meta?.status ?? c.status,

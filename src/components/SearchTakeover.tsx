@@ -18,6 +18,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronLeft,
+  Check,
   Hash,
   Calendar,
   User,
@@ -31,11 +32,9 @@ import {
 } from 'lucide-react';
 
 import { Badge } from './ui/badge';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuCheckboxItem, DropdownMenuTrigger } from './ui/dropdown-menu';
 import { SyntheticMap, type SyntheticMapPoint } from './SyntheticMap';
 import { hashToUnit, resolveNodeLocation } from '../lib/geo';
-import { SCOPE_CHIPS } from './SearchDropdown';
-import { SearchFilterBar, useOmniFilters } from './SearchFilterBar';
-import { buildFacets, applyFacetFilters } from '../engine/filterRegistry';
 import { FeedbackDrawer } from './FeedbackDrawer';
 import { agentSearch, generateAndSaveDescription, SearchStep } from '../engine/agentSearch';
 import { toEvidenceResult } from '../engine/providers';
@@ -48,7 +47,6 @@ import {
   SearchOutput,
   SearchEvidenceResult,
   SearchResult,
-  ResultKind,
   CaseResult,
   PersonResult,
   DeviceResult,
@@ -68,6 +66,17 @@ import { getContextGraph } from '../storage/config';
 import { chatCompletion, getOpenAIKey } from '../utils/openaiClient';
 
 const RECENT_SEARCHES_KEY = 'command_recent_searches';
+
+// Static top-level categories shown in the results-page filter bar. Prototype
+// only — in production, selecting one would route to that category's own page.
+const RESULT_CATEGORY_TABS = [
+  { id: 'evidence', label: 'Evidence' },
+  { id: 'cases',    label: 'Cases' },
+  { id: 'reports',  label: 'Reports' },
+  { id: 'devices',  label: 'Devices' },
+  { id: 'vehicles', label: 'Vehicles' },
+  { id: 'people',   label: 'People' },
+];
 
 const PLACEHOLDER_RECENT: string[] = [];
 
@@ -95,6 +104,81 @@ function MediaIcon({ mediaClass, size = 16 }: { mediaClass: MediaClass | string;
     case 'audio': return <File {...props} />;
     default: return <FileText {...props} />;
   }
+}
+
+// ─── Type facet (Documents / Images / Video / Audio) ─────────────────────────
+
+type MediaTypeBucket = 'documents' | 'images' | 'video' | 'audio';
+
+const MEDIA_TYPE_BUCKETS: { id: MediaTypeBucket; label: string }[] = [
+  { id: 'documents', label: 'Documents' },
+  { id: 'images',    label: 'Images' },
+  { id: 'video',     label: 'Video' },
+  { id: 'audio',     label: 'Audio' },
+];
+
+function mediaTypeBucket(mediaClass: MediaClass | string): MediaTypeBucket {
+  switch (mediaClass) {
+    case 'video': return 'video';
+    case 'image': return 'images';
+    case 'audio': return 'audio';
+    default: return 'documents';
+  }
+}
+
+function TypeFilterDropdown({ results, selected, onToggle }: {
+  results: SearchEvidenceResult[];
+  selected: Set<MediaTypeBucket>;
+  onToggle: (bucket: MediaTypeBucket) => void;
+}) {
+  const counts = React.useMemo(() => {
+    const c: Record<MediaTypeBucket, number> = { documents: 0, images: 0, video: 0, audio: 0 };
+    results.forEach(r => { c[mediaTypeBucket(r.media_class)]++; });
+    return c;
+  }, [results]);
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5,
+            padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)',
+            backgroundColor: 'transparent', cursor: 'pointer', fontFamily: 'inherit',
+            fontSize: 12, fontWeight: 600, color: 'var(--foreground)',
+          }}
+        >
+          Type{selected.size > 0 ? ` (${selected.size})` : ''}
+          <ChevronDown size={13} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" style={{ outline: 'none', minWidth: 180 }}>
+        {MEDIA_TYPE_BUCKETS.map(bucket => {
+          const checked = selected.has(bucket.id);
+          return (
+            <DropdownMenuCheckboxItem
+              key={bucket.id}
+              checked={checked}
+              onSelect={e => e.preventDefault()}
+              onCheckedChange={() => onToggle(bucket.id)}
+              style={{ paddingLeft: 10, display: 'flex', alignItems: 'center', gap: 8 }}
+            >
+              <span style={{
+                width: 14, height: 14, borderRadius: 3, flexShrink: 0,
+                border: `1.5px solid ${checked ? 'var(--foreground)' : 'var(--border)'}`,
+                backgroundColor: checked ? 'var(--foreground)' : 'transparent',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                {checked && <Check size={10} strokeWidth={3} style={{ color: 'var(--raised)' }} />}
+              </span>
+              <span style={{ flex: 1 }}>{bucket.label}</span>
+              <span style={{ color: 'var(--text-weak)', marginLeft: 12 }}>{counts[bucket.id]}</span>
+            </DropdownMenuCheckboxItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }
 
 // ─── Filter chip ─────────────────────────────────────────────────────────────
@@ -320,21 +404,32 @@ function EvidenceRow({
 
 function CaseChip({ c, query, onClick }: { c: Case; query: string; onClick?: () => void }) {
   const [hovered, setHovered] = React.useState(false);
+  const graphCase = getContextGraph().cases[c.caseId];
+  const status = graphCase?.status
+    ? graphCase.status.charAt(0).toUpperCase() + graphCase.status.slice(1)
+    : c.status;
+  const itemCount = graphCase?.evidence_ids.length ?? 0;
+  const lead = graphCase?.lead_officer ?? c.owner;
   return (
     <button
       onClick={onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        display: 'inline-flex', alignItems: 'center', gap: 6,
-        padding: '6px 12px', borderRadius: 99, border: '1px solid var(--border)',
+        display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
+        width: '100%', boxSizing: 'border-box', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--border)',
         backgroundColor: hovered ? 'var(--fill-hover)' : 'transparent',
-        cursor: 'pointer', fontFamily: 'inherit', transition: 'background-color 0.1s',
+        cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left', transition: 'background-color 0.1s',
       }}
     >
-      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--foreground)' }}
-        dangerouslySetInnerHTML={{ __html: highlightText(c.caseId, query) }} />
-      <ArrowUpRight size={13} style={{ color: 'var(--text-weak)', flexShrink: 0 }} />
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 8 }}>
+        <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--foreground)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          dangerouslySetInnerHTML={{ __html: highlightText(c.caseId, query) }} />
+        <ArrowUpRight size={14} style={{ color: 'var(--text-weak)', flexShrink: 0 }} />
+      </div>
+      <span style={{ fontSize: 12, color: 'var(--text-weak)', width: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {status} · {itemCount} item{itemCount !== 1 ? 's' : ''} · Lead: {lead}
+      </span>
     </button>
   );
 }
@@ -1332,8 +1427,8 @@ export function SearchTakeover() {
   const skipSelectedScrollRef = useRef(true);
   const [activeChips, setActiveChips] = useState<FilterChip[]>(initialOutput?.chips ?? []);
   const [selectedScopes, setSelectedScopes] = useState<Set<string>>(new Set());
-  const filters = useOmniFilters();
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
+  const [typeFilters, setTypeFilters] = useState<Set<MediaTypeBucket>>(new Set());
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -1657,44 +1752,16 @@ export function SearchTakeover() {
     return isLocationSearch ? raw.filter(r => r.kind !== 'setting' && r.kind !== 'capability') : raw;
   }, [searchOutput, isLocationSearch]);
 
-  // The facet bar reflects the dominant result type (whichever kind has the most
-  // results — usually evidence). Facet options are derived from the live result
-  // set; selecting a facet narrows only that kind, leaving other sections intact.
-  const primaryKind: ResultKind = React.useMemo(() => {
-    const counts = new Map<ResultKind, number>();
-    for (const r of omniResults) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1);
-    let best: ResultKind = 'evidence';
-    let bestN = -1;
-    for (const [k, n] of counts) if (n > bestN) { best = k; bestN = n; }
-    return best;
-  }, [omniResults]);
-
-  // For an admin/settings result set (no evidence, no cases) the facet bar spans
-  // all present admin kinds so settings + capabilities filter together (e.g. a
-  // shared "Section" facet mirroring the admin nav). Otherwise it follows the
-  // single dominant kind.
-  const isAdminResultSet = omniResults.length > 0 && omniResults.every(r => r.kind !== 'evidence' && r.kind !== 'case');
-  const facetKinds: ResultKind[] = isAdminResultSet
-    ? [...new Set(omniResults.map(r => r.kind))]
-    : [primaryKind];
-
-  const facets = buildFacets(omniResults, facetKinds);
-  const filteredOmni = applyFacetFilters(omniResults, facetKinds, filters.selections);
-
-  // Reset facet selections when the facet set changes — facet keys can collide
-  // across kinds (e.g. 'status' on both cases and people).
-  React.useEffect(() => { filters.clearAll(); }, [facetKinds.join(',')]);
-
-  // Per-kind slices of the filtered result set.
-  const personItems     = filteredOmni.filter((r): r is PersonResult     => r.kind === 'person');
-  const deviceItems     = filteredOmni.filter((r): r is DeviceResult     => r.kind === 'device');
-  const settingItems    = filteredOmni.filter((r): r is SettingResult    => r.kind === 'setting');
-  const capabilityItems = filteredOmni.filter((r): r is CapabilityResult => r.kind === 'capability');
-  const caseResults     = filteredOmni.filter((r): r is CaseResult       => r.kind === 'case');
+  // Per-kind slices of the result set.
+  const personItems     = omniResults.filter((r): r is PersonResult     => r.kind === 'person');
+  const deviceItems     = omniResults.filter((r): r is DeviceResult     => r.kind === 'device');
+  const settingItems    = omniResults.filter((r): r is SettingResult    => r.kind === 'setting');
+  const capabilityItems = omniResults.filter((r): r is CapabilityResult => r.kind === 'capability');
+  const caseResults     = omniResults.filter((r): r is CaseResult       => r.kind === 'case');
 
   // Evidence items feed the existing rich evidence pipeline (grouping, preview,
   // PDF/attribute match navigators).
-  const evidenceItems: SearchEvidenceResult[] = filteredOmni
+  const evidenceItems: SearchEvidenceResult[] = omniResults
     .filter((r): r is Extract<SearchResult, { kind: 'evidence' }> => r.kind === 'evidence')
     .map(r => r.evidence);
 
@@ -1904,13 +1971,33 @@ export function SearchTakeover() {
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         <div style={{ width: '100%', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
 
-          {/* Type-aware filter bar — facets for the dominant result type, derived
-              from the live result set. Centered and capped to the results-list
-              width so they align. */}
-          {hasResults && facets.length > 0 && (
+          {/* Category filter bar — static top-level entity categories. Prototype
+              only: selecting one is a visual toggle and doesn't narrow results;
+              in production each would route to its own results page. */}
+          {hasResults && (
             <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 16, paddingBottom: 8, flexShrink: 0, borderBottom: '1px solid var(--border)' }}>
-              <div style={{ width: '100%', maxWidth: 860, minWidth: 0, padding: '0 20px' }}>
-                <SearchFilterBar facets={facets} filters={filters} />
+              <div style={{ width: '100%', maxWidth: 860, minWidth: 0, padding: '0 20px', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {RESULT_CATEGORY_TABS.map(tab => {
+                  const active = selectedScopes.has(tab.id);
+                  return (
+                    <button
+                      key={tab.id}
+                      onClick={() => setSelectedScopes(prev => (prev.has(tab.id) ? new Set() : new Set([tab.id])))}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 5,
+                        padding: '4px 11px', borderRadius: 99, cursor: 'pointer',
+                        fontSize: 12, fontWeight: active ? 600 : 500,
+                        border: `1px solid ${active ? 'transparent' : 'var(--border)'}`,
+                        backgroundColor: active ? 'var(--foreground)' : 'transparent',
+                        color: active ? 'var(--raised)' : 'var(--foreground)',
+                        fontFamily: 'inherit', whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {tab.label}
+                      <ArrowUpRight size={12} style={{ flexShrink: 0 }} />
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -2007,7 +2094,7 @@ export function SearchTakeover() {
                                 </button>
                               )}
                             />
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '0 20px 8px' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, padding: '0 20px 8px' }}>
                               {matchedCases.map(c => (
                                 <CaseChip key={c.caseId} c={c} query={query} onClick={() => handleViewCase(c.caseId)} />
                               ))}
@@ -2079,24 +2166,40 @@ export function SearchTakeover() {
                         {/* Everything else — text matches ranked first within this list */}
                         {otherGroupItems.length > 0 && (() => {
                           const hasGroupsAbove = matchedCases.length > 0 || attributeGroupItems.length > 0;
+                          const filteredOtherItems = typeFilters.size === 0
+                            ? otherGroupItems
+                            : otherGroupItems.filter(r => typeFilters.has(mediaTypeBucket(r.media_class)));
                           return (
                             <div style={{ paddingTop: 20, paddingBottom: 20 }}>
                               <SectionHeader
                                 title={hasGroupsAbove ? 'More results' : 'Results'}
                                 count={otherGroupItems.length}
                                 action={(
-                                  <button
-                                    onClick={() => navigate('/evidence')}
-                                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 600, color: '#60a5fa' }}
-                                    onMouseEnter={e => (e.currentTarget.style.color = '#3b82f6')}
-                                    onMouseLeave={e => (e.currentTarget.style.color = '#60a5fa')}
-                                  >
-                                    See all
-                                  </button>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                    <TypeFilterDropdown
+                                      results={otherGroupItems}
+                                      selected={typeFilters}
+                                      onToggle={bucket => {
+                                        setTypeFilters(prev => {
+                                          const next = new Set(prev);
+                                          next.has(bucket) ? next.delete(bucket) : next.add(bucket);
+                                          return next;
+                                        });
+                                      }}
+                                    />
+                                    <button
+                                      onClick={() => navigate('/evidence')}
+                                      style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 600, color: '#60a5fa' }}
+                                      onMouseEnter={e => (e.currentTarget.style.color = '#3b82f6')}
+                                      onMouseLeave={e => (e.currentTarget.style.color = '#60a5fa')}
+                                    >
+                                      See all
+                                    </button>
+                                  </div>
                                 )}
                               />
                               <ResultsTable
-                                results={otherGroupItems}
+                                results={filteredOtherItems}
                                 selectedId={selectedId}
                                 query={query}
                                 checkedIds={checkedIds}
@@ -2110,13 +2213,13 @@ export function SearchTakeover() {
                                   });
                                 }}
                                 onToggleAll={() => {
-                                  const allSelected = otherGroupItems.every(r => checkedIds.has(r.evidence_id));
+                                  const allSelected = filteredOtherItems.every(r => checkedIds.has(r.evidence_id));
                                   setCheckedIds(prev => {
                                     const next = new Set(prev);
                                     if (allSelected) {
-                                      otherGroupItems.forEach(r => next.delete(r.evidence_id));
+                                      filteredOtherItems.forEach(r => next.delete(r.evidence_id));
                                     } else {
-                                      otherGroupItems.forEach(r => next.add(r.evidence_id));
+                                      filteredOtherItems.forEach(r => next.add(r.evidence_id));
                                     }
                                     return next;
                                   });

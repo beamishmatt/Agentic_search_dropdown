@@ -109,7 +109,7 @@ export async function synthesizeResults(
     officer: n.officer,
     category: n.category,
     description: n.description,
-    objects_detected: n.objects_detected?.map(o => `${o.color ? o.color + ' ' : ''}${o.label}`).join(', '),
+    objects_detected: n.objects_detected?.map(o => `${o.color ? o.color + ' ' : ''}${o.make ? o.make + ' ' : ''}${o.model ? o.model + ' ' : ''}${o.label}`).join(', '),
     date_recorded: n.date_recorded,
     thumbnailUrl: n.thumbnailUrl,
   }));

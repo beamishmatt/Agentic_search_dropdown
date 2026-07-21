@@ -24,6 +24,8 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { agentSearch, reverseImageSearch } from '../engine/agentSearch';
+import { summarizeCase } from '../engine/providers';
+import { getContextGraph } from '../storage/config';
 import { SearchOutput, SearchEvidenceResult, MediaClass } from '../data/types';
 
 // ─── Scope chips ──────────────────────────────────────────────────────────────
@@ -459,13 +461,13 @@ export function SearchDropdown({ inputRef, query, onQueryChange, onClose, onOpen
         return {
           id: cid,
           name: entity?.name || cid,
-          subtitle: entity?.subtitle || `${output?.results.filter(r => r.case_id === cid).length ?? 0} evidence`,
+          subtitle: summarizeCase(cid, getContextGraph()),
         };
       })
     : caseEntities.map(e => ({
         id: e.id,
         name: e.name,
-        subtitle: e.subtitle || `${output?.results.filter(r => r.case_id === e.id).length ?? 0} evidence`,
+        subtitle: summarizeCase(e.id, getContextGraph()),
       }));
 
   // Evidence ID matches — surfaced as its own chip section (like Cases) only

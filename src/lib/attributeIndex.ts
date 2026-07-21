@@ -39,6 +39,8 @@ function nodeAttributeText(node: GraphNode): string {
     for (const obj of node.objects_detected) {
       const segs: string[] = [];
       if (obj.color) segs.push(obj.color);
+      if (obj.make) segs.push(obj.make);
+      if (obj.model) segs.push(obj.model);
       if (obj.label) segs.push(obj.label);
       if (obj.position) segs.push(obj.position);
       parts.push(segs.join(' '));
